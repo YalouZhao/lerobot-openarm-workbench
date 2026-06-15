@@ -29,6 +29,7 @@ from lerobot.utils.feature_utils import build_dataset_frame, combine_feature_dic
 from lerobot.utils.robot_utils import precise_sleep
 
 from .config import WorkbenchSettings
+from .dataset_manifest import CanonicalDatasetManifest
 from .device_probe import reset_realsense
 from .episode_manifest import EpisodeManifest, EpisodeRecord, now_iso
 
@@ -87,6 +88,13 @@ class WorkbenchController:
         self.session_id = session_id or time.strftime("%Y%m%d_%H%M%S")
         self.session_dir = settings.session_root / self.session_id
         self.manifest = EpisodeManifest(self.session_dir)
+        self.dataset_manifest = CanonicalDatasetManifest(
+            dataset_root=settings.dataset.root,
+            dataset_name=settings.dataset.root.name,
+            repo_id=settings.dataset.repo_id,
+            task_text=str(settings.control.get("default_task", "")),
+            session_id=self.session_id,
+        )
 
         self.lock = threading.RLock()
         self.dataset_lock = threading.RLock()
@@ -225,7 +233,9 @@ class WorkbenchController:
                     save_duration_s=self.last_save_duration_s,
                     cameras=self._camera_health_labels(),
                 )
-                self.manifest.append_episode(record)
+                self.dataset_manifest.task_text = task
+                self.dataset_manifest.append_episode(record)
+                self.manifest.replace_episodes(self.dataset_manifest.read_episodes())
                 self.state = "unlabeled"
                 self.message = "episode saved; label required"
                 self.manifest.event(
@@ -267,12 +277,12 @@ class WorkbenchController:
 
             if self.last_saved_episode_index is None:
                 raise RuntimeError("no saved episode to mark discard")
-            record = self.manifest.update_label(
+            record = self.dataset_manifest.update_label(
                 self.last_saved_episode_index,
                 label="discard",
-                accepted=False,
                 notes="discarded after save",
             )
+            self.manifest.replace_episodes(self.dataset_manifest.read_episodes())
             self.state = "idle"
             self.message = "episode marked discard"
             return {"ok": True, "episode_index": record["episode_index"]}
@@ -294,7 +304,11 @@ class WorkbenchController:
                 raise RuntimeError("no saved episode to label")
             if accepted is None:
                 accepted = label == "success"
-            record = self.manifest.update_label(target, label=label, accepted=bool(accepted), notes=notes)
+            expected_accepted = label == "success"
+            if bool(accepted) != expected_accepted:
+                raise ValueError("accepted must match label in this workbench version")
+            record = self.dataset_manifest.update_label(target, label=label, notes=notes)
+            self.manifest.replace_episodes(self.dataset_manifest.read_episodes())
             self.state = "idle"
             self.message = f"episode {target} labeled {label}"
             self.manifest.event(

@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .atomic_io import atomic_write_jsonl
+
 
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
@@ -35,6 +37,9 @@ class EpisodeManifest:
 
     def append_episode(self, record: EpisodeRecord) -> None:
         self._append_jsonl(self.episodes_path, asdict(record))
+
+    def replace_episodes(self, records: list[dict[str, Any]]) -> None:
+        atomic_write_jsonl(self.episodes_path, records)
 
     def update_label(
         self,
@@ -95,6 +100,4 @@ class EpisodeManifest:
 
     @staticmethod
     def _rewrite_jsonl(path: Path, payloads: list[dict[str, Any]]) -> None:
-        with path.open("w", encoding="utf-8") as f:
-            for payload in payloads:
-                f.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        atomic_write_jsonl(path, payloads)

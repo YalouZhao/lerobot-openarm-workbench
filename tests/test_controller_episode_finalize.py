@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -128,3 +129,112 @@ def test_stop_episode_finalizes_dataset_after_saving(tmp_path: Path) -> None:
     assert fake_dataset.saved is True
     assert finalized == [True]
     assert controller.dataset is None
+
+
+def test_stop_and_label_episode_update_dataset_root_and_session_manifest(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="test")
+    fake_dataset = FakeDataset()
+
+    controller.dataset = fake_dataset
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-09T00:00:00+08:00"
+    controller.current_frame_count = 3
+    controller.current_record_start = 1.0
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    result = controller.label_episode("success")
+
+    assert result["ok"] is True
+    dataset_records = [
+        json.loads(line)
+        for line in (tmp_path / "dataset" / "episodes.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    session_records = [
+        json.loads(line)
+        for line in (tmp_path / "sessions" / "test" / "episodes.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    accepted = json.loads((tmp_path / "dataset" / "accepted_episodes.json").read_text())
+
+    assert dataset_records == session_records
+    assert dataset_records[0]["label"] == "success"
+    assert dataset_records[0]["accepted"] is True
+    assert accepted["episodes"] == [0]
+
+
+def test_discard_after_stop_marks_dataset_root_without_clearing_saved_episode(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="test")
+    fake_dataset = FakeDataset()
+
+    controller.dataset = fake_dataset
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-09T00:00:00+08:00"
+    controller.current_frame_count = 3
+    controller.current_record_start = 1.0
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    result = controller.discard_episode()
+
+    assert result == {"ok": True, "episode_index": 0}
+    dataset_records = [
+        json.loads(line)
+        for line in (tmp_path / "dataset" / "episodes.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    accepted = json.loads((tmp_path / "dataset" / "accepted_episodes.json").read_text())
+
+    assert fake_dataset.saved is True
+    assert dataset_records[0]["label"] == "discard"
+    assert dataset_records[0]["accepted"] is False
+    assert accepted["episodes"] == []
