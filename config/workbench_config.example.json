@@ -1,0 +1,74 @@
+{
+  "workspace_root": "/home/robot/lerobot_workbench",
+  "session_root": "/home/robot/lerobot_workbench/sessions",
+  "dataset": {
+    "repo_id": "local/example_dataset",
+    "root": "/home/robot/data/example_dataset",
+    "fps": 30,
+    "episode_time_s": 60,
+    "streaming_encoding": true,
+    "vcodec": "h264",
+    "encoder_threads": 2,
+    "encoder_queue_maxsize": 30,
+    "num_image_writer_processes": 0,
+    "num_image_writer_threads_per_camera": 4,
+    "video_encoding_batch_size": 1,
+    "push_to_hub": false
+  },
+  "robot": {
+    "id": "my_bimanual_openarm",
+    "left_arm": {
+      "port": "can1",
+      "side": "left"
+    },
+    "right_arm": {
+      "port": "can0",
+      "side": "right"
+    }
+  },
+  "teleop": {
+    "id": "my_openarm_mini",
+    "port_right": "/dev/ttyACM1",
+    "port_left": "/dev/ttyACM0"
+  },
+  "cameras": {
+    "main": {
+      "type": "opencv",
+      "index_or_path": "/dev/v4l/by-path/REPLACE_WITH_MAIN_CAMERA-video-index0",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "fourcc": "MJPG",
+      "warmup_s": 5
+    },
+    "wrist_left": {
+      "type": "opencv",
+      "index_or_path": "/dev/v4l/by-path/REPLACE_WITH_LEFT_WRIST_CAMERA-video-index0",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "fourcc": "MJPG",
+      "warmup_s": 5
+    },
+    "wrist_right": {
+      "type": "opencv",
+      "index_or_path": "/dev/v4l/by-path/REPLACE_WITH_RIGHT_WRIST_CAMERA-video-index0",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "fourcc": "MJPG",
+      "warmup_s": 5
+    }
+  },
+  "control": {
+    "teleop_when_idle": false,
+    "default_task": "Describe the collection task here.",
+    "jpeg_quality": 80,
+    "camera_timeout_s": 2.0,
+    "connect_retries": 5,
+    "connect_retry_delay_s": 1.5,
+    "auto_reconnect_when_idle": true,
+    "reconnect_cooldown_s": 5.0
+  }
+}
+

@@ -1,0 +1,77 @@
+{
+  "created_at": "2026-06-10T13:21:02+08:00",
+  "robot_id": "my_bimanual_openarm",
+  "units": "degrees",
+  "updated_at": "2026-06-10T13:21:13+08:00",
+  "waypoints": [
+    {
+      "action": {
+        "left_gripper.pos": -0.01092846942723013,
+        "left_joint_1.pos": -1.1256323510047033,
+        "left_joint_2.pos": -26.326682850197585,
+        "left_joint_3.pos": -0.03278540828169039,
+        "left_joint_4.pos": -1.519057250384988,
+        "left_joint_5.pos": 3.0490429701972057,
+        "left_joint_6.pos": -7.136290535981274,
+        "left_joint_7.pos": 0.05464234713615065,
+        "right_gripper.pos": -0.01092846942723013,
+        "right_joint_1.pos": 1.1256323510047033,
+        "right_joint_2.pos": 26.326682850197585,
+        "right_joint_3.pos": 0.03278540828169039,
+        "right_joint_4.pos": -1.519057250384988,
+        "right_joint_5.pos": -3.0490429701972057,
+        "right_joint_6.pos": 7.136290535981274,
+        "right_joint_7.pos": -0.05464234713615065
+      },
+      "created_at": "2026-06-10T13:21:02+08:00",
+      "duration_s": 5.0,
+      "name": "lift_clear_table"
+    },
+    {
+      "action": {
+        "left_gripper.pos": -0.01092846942723013,
+        "left_joint_1.pos": -36.79615656148405,
+        "left_joint_2.pos": -26.67639387186895,
+        "left_joint_3.pos": -0.03278540828169039,
+        "left_joint_4.pos": -1.4534864338216071,
+        "left_joint_5.pos": 3.1146137867605868,
+        "left_joint_6.pos": -5.584447877314596,
+        "left_joint_7.pos": 3.835892768957775,
+        "right_gripper.pos": -0.01092846942723013,
+        "right_joint_1.pos": 36.79615656148405,
+        "right_joint_2.pos": 26.67639387186895,
+        "right_joint_3.pos": 0.03278540828169039,
+        "right_joint_4.pos": -1.4534864338216071,
+        "right_joint_5.pos": -3.1146137867605868,
+        "right_joint_6.pos": 5.584447877314596,
+        "right_joint_7.pos": -3.835892768957775
+      },
+      "created_at": "2026-06-10T13:21:07+08:00",
+      "duration_s": 5.0,
+      "name": "above_workspace"
+    },
+    {
+      "action": {
+        "left_gripper.pos": -0.01092846942723013,
+        "left_joint_1.pos": -29.342940412113098,
+        "left_joint_2.pos": -8.578848500375651,
+        "left_joint_3.pos": -0.03278540828169039,
+        "left_joint_4.pos": 5.803017265859198,
+        "left_joint_5.pos": 18.807895884263154,
+        "left_joint_6.pos": -23.616422432244512,
+        "left_joint_7.pos": -60.72950460711803,
+        "right_gripper.pos": -0.01092846942723013,
+        "right_joint_1.pos": 29.342940412113098,
+        "right_joint_2.pos": 8.578848500375651,
+        "right_joint_3.pos": 0.03278540828169039,
+        "right_joint_4.pos": 5.803017265859198,
+        "right_joint_5.pos": -18.807895884263154,
+        "right_joint_6.pos": 23.616422432244512,
+        "right_joint_7.pos": 60.72950460711803
+      },
+      "created_at": "2026-06-10T13:21:13+08:00",
+      "duration_s": 4.0,
+      "name": "ready"
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Runtime logs and sessions
+logs/
+sessions/
+*.log
+
+# Local machine configuration
+.env
+.env.*
+!.env.example
+config/workbench_config.json
+config/workbench_config.json.bak.*
+config/ready_path.json
+config/ready_pose.json
+
+# Data, exports, and model artifacts
+data/
+exports/
+*.tar
+*.tar.gz
+*.zip
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+checkpoints/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+

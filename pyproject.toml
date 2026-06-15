@@ -1,0 +1,14 @@
+[project]
+name = "lerobot-openarm-workbench"
+version = "0.1.0"
+description = "Internal LeRobot/OpenArm bimanual data collection workbench."
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
