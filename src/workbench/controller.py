@@ -12,12 +12,6 @@ import numpy as np
 
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
-from lerobot.datasets import (
-    LeRobotDataset,
-    VideoEncodingManager,
-    aggregate_pipeline_dataset_features,
-    create_initial_features,
-)
 from lerobot.processor import make_default_processors
 from lerobot.robots import make_robot_from_config
 from lerobot.robots.bi_openarm_follower.config_bi_openarm_follower import BiOpenArmFollowerConfig
@@ -25,13 +19,21 @@ from lerobot.robots.openarm_follower.config_openarm_follower import OpenArmFollo
 from lerobot.teleoperators import make_teleoperator_from_config
 from lerobot.teleoperators.openarm_mini.config_openarm_mini import OpenArmMiniConfig
 from lerobot.utils.constants import ACTION, OBS_STR
-from lerobot.utils.feature_utils import build_dataset_frame, combine_feature_dicts
 from lerobot.utils.robot_utils import precise_sleep
 
 from .config import WorkbenchSettings
 from .dataset_manifest import CanonicalDatasetManifest
 from .device_probe import reset_realsense
 from .episode_manifest import EpisodeManifest, EpisodeRecord, now_iso
+from .lerobot_compat import (
+    LeRobotDataset,
+    VideoEncodingManager,
+    aggregate_pipeline_dataset_features,
+    build_dataset_frame,
+    combine_feature_dicts,
+    create_initial_features,
+    resume_lerobot_dataset,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -554,7 +556,7 @@ class WorkbenchController:
             encoder_threads=settings.encoder_threads,
         )
         if should_resume:
-            self.dataset = LeRobotDataset.resume(
+            self.dataset = resume_lerobot_dataset(
                 settings.repo_id,
                 root=settings.root,
                 image_writer_processes=settings.num_image_writer_processes if num_cameras else 0,
