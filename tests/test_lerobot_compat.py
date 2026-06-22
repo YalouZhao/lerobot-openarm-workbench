@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -81,3 +82,123 @@ def test_resume_uses_classmethod_when_available(monkeypatch, tmp_path: Path) -> 
     dataset = compat.resume_lerobot_dataset("local/test", root=tmp_path)
 
     assert dataset.used_resume is True
+
+
+def test_builds_lerobot_04_bimanual_config_with_arm_cameras(monkeypatch) -> None:
+    compat, _ = _load_compat(monkeypatch, legacy_exports=False)
+
+    @dataclass
+    class ArmConfig:
+        port: str
+        side: str
+        cameras: dict = field(default_factory=dict)
+
+    @dataclass
+    class BiConfig:
+        left_arm_config: ArmConfig
+        right_arm_config: ArmConfig
+        id: str
+
+    cameras = {"main": "main_cfg", "wrist_left": "left_cfg", "wrist_right": "right_cfg"}
+    config, aliases = compat.make_bi_openarm_configuration(
+        BiConfig,
+        ArmConfig,
+        robot_id="robot",
+        left_arm={"port": "can1", "side": "left"},
+        right_arm={"port": "can0", "side": "right"},
+        cameras=cameras,
+    )
+
+    assert config.left_arm_config.cameras == {"main": "main_cfg", "wrist_left": "left_cfg"}
+    assert config.right_arm_config.cameras == {"wrist_right": "right_cfg"}
+    assert aliases == {
+        "left_main": "main",
+        "left_wrist_left": "wrist_left",
+        "right_wrist_right": "wrist_right",
+    }
+
+
+def test_builds_lerobot_05_bimanual_config_with_top_level_cameras(monkeypatch) -> None:
+    compat, _ = _load_compat(monkeypatch, legacy_exports=False)
+
+    @dataclass
+    class ArmConfig:
+        port: str
+        side: str
+
+    @dataclass
+    class BiConfig:
+        left_arm_config: ArmConfig
+        right_arm_config: ArmConfig
+        id: str
+        cameras: dict = field(default_factory=dict)
+
+    cameras = {"main": "main_cfg", "wrist_left": "left_cfg", "wrist_right": "right_cfg"}
+    config, aliases = compat.make_bi_openarm_configuration(
+        BiConfig,
+        ArmConfig,
+        robot_id="robot",
+        left_arm={"port": "can1", "side": "left"},
+        right_arm={"port": "can0", "side": "right"},
+        cameras=cameras,
+    )
+
+    assert config.cameras == cameras
+    assert aliases == {}
+
+
+def test_camera_adapter_restores_canonical_observation_keys(monkeypatch) -> None:
+    compat, _ = _load_compat(monkeypatch, legacy_exports=False)
+
+    class Robot:
+        action_features = {
+            "left_joint_1.pos": float,
+            "left_joint_1.vel": float,
+            "left_joint_1.torque": float,
+            "right_joint_1.pos": float,
+        }
+        observation_features = {
+            "left_joint_1.pos": float,
+            "left_joint_1.vel": float,
+            "left_joint_1.torque": float,
+            "right_joint_1.pos": float,
+            "left_main": (480, 640, 3),
+            "left_wrist_left": (480, 640, 3),
+            "right_wrist_right": (480, 640, 3),
+        }
+
+        def get_observation(self):
+            return {
+                "left_joint_1.pos": 1.0,
+                "left_joint_1.vel": 2.0,
+                "left_joint_1.torque": 3.0,
+                "right_joint_1.pos": 4.0,
+                "left_main": "main_frame",
+                "left_wrist_left": "left_frame",
+                "right_wrist_right": "right_frame",
+            }
+
+    robot = compat.adapt_bi_openarm_camera_keys(
+        Robot(),
+        {
+            "left_main": "main",
+            "left_wrist_left": "wrist_left",
+            "right_wrist_right": "wrist_right",
+        },
+    )
+
+    assert list(robot.observation_features) == [
+        "right_joint_1.pos",
+        "left_joint_1.pos",
+        "main",
+        "wrist_left",
+        "wrist_right",
+    ]
+    assert list(robot.action_features) == ["right_joint_1.pos", "left_joint_1.pos"]
+    assert robot.get_observation() == {
+        "right_joint_1.pos": 4.0,
+        "left_joint_1.pos": 1.0,
+        "main": "main_frame",
+        "wrist_left": "left_frame",
+        "wrist_right": "right_frame",
+    }

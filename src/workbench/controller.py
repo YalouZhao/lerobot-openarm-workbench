@@ -32,6 +32,8 @@ from .lerobot_compat import (
     build_dataset_frame,
     combine_feature_dicts,
     create_initial_features,
+    adapt_bi_openarm_camera_keys,
+    make_bi_openarm_configuration,
     resume_lerobot_dataset,
 )
 
@@ -428,16 +430,18 @@ class WorkbenchController:
 
     def _connect_devices_once(self) -> None:
         cameras = {name: _make_camera_config(cfg) for name, cfg in self.settings.cameras.items()}
-        robot_cfg = BiOpenArmFollowerConfig(
-            id=self.settings.robot["id"],
-            left_arm_config=OpenArmFollowerConfigBase(
-                port=self.settings.robot["left_arm"]["port"],
-                side=self.settings.robot["left_arm"].get("side"),
-            ),
-            right_arm_config=OpenArmFollowerConfigBase(
-                port=self.settings.robot["right_arm"]["port"],
-                side=self.settings.robot["right_arm"].get("side"),
-            ),
+        robot_cfg, camera_aliases = make_bi_openarm_configuration(
+            BiOpenArmFollowerConfig,
+            OpenArmFollowerConfigBase,
+            robot_id=self.settings.robot["id"],
+            left_arm={
+                "port": self.settings.robot["left_arm"]["port"],
+                "side": self.settings.robot["left_arm"].get("side"),
+            },
+            right_arm={
+                "port": self.settings.robot["right_arm"]["port"],
+                "side": self.settings.robot["right_arm"].get("side"),
+            },
             cameras=cameras,
         )
         teleop_cfg = OpenArmMiniConfig(
@@ -446,7 +450,7 @@ class WorkbenchController:
             port_left=self.settings.teleop["port_left"],
         )
 
-        self.robot = make_robot_from_config(robot_cfg)
+        self.robot = adapt_bi_openarm_camera_keys(make_robot_from_config(robot_cfg), camera_aliases)
         self.teleop = make_teleoperator_from_config(teleop_cfg)
         self.teleop_action_processor, self.robot_action_processor, self.robot_observation_processor = (
             make_default_processors()
