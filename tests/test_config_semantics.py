@@ -6,6 +6,30 @@ from pathlib import Path
 import pytest
 
 from workbench.config import load_settings, validate_semantic_configuration
+from workbench.safety import EXPECTED_FOLLOWER_ACTION_KEYS
+
+
+def safety_payload() -> dict:
+    return {
+        "safety_config_version": "test_safety_v1",
+        "safety_config_verified": False,
+        "joints": {
+            key: {
+                "hard_limit": [-65.0, 0.0] if "gripper" in key else [-100.0, 100.0],
+                "soft_limit": [-65.0, 0.0] if "gripper" in key else [-100.0, 100.0],
+                "deadband": 0.0,
+                "max_step": 2.0,
+                "max_velocity": 60.0,
+                "tracking_error_warning": 5.0,
+                "tracking_error_contamination": 10.0,
+                "tracking_error_freeze": 20.0,
+            }
+            for key in EXPECTED_FOLLOWER_ACTION_KEYS
+        },
+        "driver_mismatch_atol": 1e-4,
+        "mismatch_contamination_frames": 3,
+        "tracking_error_persistence_frames": 3,
+    }
 
 
 def config_payload() -> dict:
@@ -30,6 +54,7 @@ def config_payload() -> dict:
         },
         "cameras": {},
         "control": {},
+        "safety": safety_payload(),
     }
 
 
@@ -49,6 +74,17 @@ def test_loads_explicit_v2_semantics(tmp_path: Path) -> None:
     assert settings.apply_openarm_mini_compat_mapping is True
     assert settings.compat_mapping_version == "openarm_mini_818892a3"
     assert settings.compat_mapping_verified is False
+    assert settings.safety.safety_config_version == "test_safety_v1"
+    assert settings.safety.safety_config_verified is False
+    assert settings.safety.joints["left_gripper.pos"].hard_limit == (-65.0, 0.0)
+
+
+def test_v2_json_config_requires_safety_section(tmp_path: Path) -> None:
+    payload = config_payload()
+    del payload["safety"]
+
+    with pytest.raises(ValueError, match="missing required safety configuration"):
+        load_settings(write_config(tmp_path, payload))
 
 
 @pytest.mark.parametrize(
@@ -114,3 +150,10 @@ def test_example_config_declares_v2_semantics() -> None:
     assert payload["teleop"]["apply_openarm_mini_compat_mapping"] is True
     assert payload["teleop"]["compat_mapping_version"] == "openarm_mini_818892a3"
     assert payload["teleop"]["compat_mapping_verified"] is False
+    assert payload["safety"]["safety_config_version"] == "openarm_follower_safety_v2"
+    assert payload["safety"]["safety_config_verified"] is True
+    assert payload["safety"]["verified_by"] == "hardware_operator"
+    assert "driver_mismatch=0" in payload["safety"]["verification_basis"]
+    assert payload["safety"]["tracking_error_persistence_frames"] == 3
+    assert payload["safety"]["joints"]["left_joint_2.pos"]["hard_limit"] == [-90.0, 9.0]
+    assert payload["safety"]["joints"]["right_joint_2.pos"]["hard_limit"] == [-9.0, 90.0]

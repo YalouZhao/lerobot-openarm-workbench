@@ -49,7 +49,6 @@ def make_handler(controller: WorkbenchController):
                     self._send_json(
                         controller.label_episode(
                             label=str(body.get("label", "")),
-                            accepted=body.get("accepted"),
                             notes=str(body.get("notes", "")),
                             episode_index=body.get("episode_index"),
                         )

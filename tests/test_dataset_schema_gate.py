@@ -8,6 +8,31 @@ import pytest
 
 from workbench.dataset_manifest import CanonicalDatasetManifest, DatasetSchemaError
 from workbench.episode_manifest import EpisodeRecord
+from workbench.safety import EXPECTED_FOLLOWER_ACTION_KEYS
+
+
+def safety_metadata(*, verified: bool = True) -> dict:
+    hard_limits = {
+        key: ([-65.0, 0.0] if "gripper" in key else [-100.0, 100.0]) for key in EXPECTED_FOLLOWER_ACTION_KEYS
+    }
+    return {
+        "safety_config_version": "test_safety_v1",
+        "safety_config_verified": verified,
+        "verified_by": "hardware_operator",
+        "verified_at": "2026-06-24T16:30:00+08:00",
+        "verification_basis": "driver_mismatch=0; max_step_violations=0; no freeze/contamination",
+        "hard_limits": hard_limits,
+        "soft_limits": hard_limits,
+        "deadband": {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS},
+        "max_step": {key: 2.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS},
+        "velocity_limit": {key: 60.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS},
+        "tracking_error_warning": {key: 5.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS},
+        "tracking_error_contamination": {key: 10.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS},
+        "tracking_error_freeze": {key: 20.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS},
+        "driver_mismatch_atol": 1e-4,
+        "mismatch_contamination_frames": 3,
+        "tracking_error_persistence_frames": 3,
+    }
 
 
 def make_manifest(root: Path, **overrides) -> CanonicalDatasetManifest:
@@ -25,6 +50,7 @@ def make_manifest(root: Path, **overrides) -> CanonicalDatasetManifest:
         "compat_mapping_applied": True,
         "compat_mapping_version": "openarm_mini_818892a3",
         "compat_mapping_verified": False,
+        "safety_metadata": safety_metadata(),
     }
     values.update(overrides)
     return CanonicalDatasetManifest(**values)
@@ -47,6 +73,28 @@ def make_record(**overrides) -> EpisodeRecord:
         compat_mapping_applied=True,
         compat_mapping_version="openarm_mini_818892a3",
         compat_mapping_verified=False,
+        safety_config_version="test_safety_v1",
+        safety_config_verified=True,
+        verified_by="hardware_operator",
+        verified_at="2026-06-24T16:30:00+08:00",
+        verification_basis="driver_mismatch=0; max_step_violations=0; no freeze/contamination",
+        hard_limits=safety_metadata()["hard_limits"],
+        soft_limits=safety_metadata()["soft_limits"],
+        deadband=safety_metadata()["deadband"],
+        max_step=safety_metadata()["max_step"],
+        velocity_limit=safety_metadata()["velocity_limit"],
+        tracking_error_warning=safety_metadata()["tracking_error_warning"],
+        tracking_error_contamination=safety_metadata()["tracking_error_contamination"],
+        tracking_error_freeze=safety_metadata()["tracking_error_freeze"],
+        driver_mismatch_atol=1e-4,
+        mismatch_contamination_frames=3,
+        tracking_error_persistence_frames=3,
+        command_validation={
+            "mismatch_frames": 0,
+            "max_abs_error": 0.0,
+            "affected_joints": [],
+            "max_consecutive_mismatch_frames": 0,
+        },
     )
     return replace(record, **overrides)
 
@@ -123,6 +171,11 @@ def test_new_manifest_preserves_manifest_schema_and_writes_dataset_semantics(tmp
     assert payload["compat_mapping_applied"] is True
     assert payload["compat_mapping_version"] == "openarm_mini_818892a3"
     assert payload["compat_mapping_verified"] is False
+    assert payload["safety_config_version"] == "test_safety_v1"
+    assert payload["verified_by"] == "hardware_operator"
+    assert "max_step_violations=0" in payload["verification_basis"]
+    assert payload["hard_limits"]["left_gripper.pos"] == [-65.0, 0.0]
+    assert payload["velocity_limit"]["right_joint_1.pos"] == 60.0
 
 
 def test_episode_records_compatibility_mapping_debug_metadata(tmp_path: Path) -> None:
@@ -137,6 +190,37 @@ def test_episode_records_compatibility_mapping_debug_metadata(tmp_path: Path) ->
     assert record["compat_mapping_applied"] is True
     assert record["compat_mapping_version"] == "openarm_mini_818892a3"
     assert record["compat_mapping_verified"] is False
+    assert record["safety_config_version"] == "test_safety_v1"
+    assert record["verified_at"] == "2026-06-24T16:30:00+08:00"
+    assert record["hard_limits"]["left_gripper.pos"] == [-65.0, 0.0]
+
+
+def test_safety_config_mismatch_blocks_existing_dataset_append(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    manifest = make_manifest(root)
+    manifest.ensure_initialized()
+    changed = safety_metadata()
+    changed["safety_config_version"] = "other_safety_v2"
+
+    with pytest.raises(DatasetSchemaError, match="safety_config_version"):
+        make_manifest(root, safety_metadata=changed).validate_for_collection()
+
+
+def test_contaminated_episode_cannot_be_accepted(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    manifest = make_manifest(root, compat_mapping_verified=True)
+    manifest.ensure_initialized()
+    manifest.append_episode(
+        make_record(
+            compat_mapping_verified=True,
+            contaminated=True,
+            contamination_reasons=("persistent_driver_command_mismatch",),
+        )
+    )
+
+    labeled = manifest.update_label(0, "success")
+
+    assert labeled["accepted"] is False
 
 
 def test_episode_semantics_must_match_dataset_root(tmp_path: Path) -> None:

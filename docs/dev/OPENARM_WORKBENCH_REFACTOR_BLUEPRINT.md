@@ -1,11 +1,16 @@
 # OpenArm Workbench Refactor Blueprint
 
+> 2026-06-24 alignment: `.workspace/PRD.md` is the product source of truth. PRD Phase 1 is the Workbench Safety Layer specified in `docs/superpowers/specs/2026-06-24-phase1-workbench-safety-design.md`. Older phase numbering below is historical; where it conflicts, the PRD and this alignment note win.
+
+> 2026-06-24 hardware revision: `openarm_follower_safety_v1_candidate` showed follower-qpos feedback sawtooth and is quarantined. `openarm_follower_safety_v2_candidate` uses current qpos only for the first max-step reference, then previous `effective_command`; tracking error is monitored separately and may warning/contaminate/freeze before the final hard clamp. The label API never accepts a client-provided `accepted` value.
+
 ## 1. Document status
 
 - Project: `lerobot-openarm-workbench`
-- Development host: 4090, `/home/sh/lerobot_workbench`
+- Development workspace: 4090, `/home/sh/src/lerobot-openarm-workbench-dev`
+- Stable deployment: 4090, `/home/sh/lerobot_workbench`, port `8091`; never modified by development work
 - Runtime baseline: LeRobot `0.4.4`, Conda environment `lerobot04`
-- Confirmed development model: replace the copied deployment tree with an independent Git clone on 4090 before phase-0 feature work
+- Confirmed development model: independent Git development workspace promoted explicitly to the non-Git stable deployment only after acceptance
 - Document purpose: freeze the engineering scope and staged acceptance gates before feature development
 - Functional code changed in this step: none
 - Git commit/push allowed in this step: no
@@ -16,7 +21,7 @@ This blueprint implements the approved PRD and subsequent confirmed constraints.
 
 The workbench can currently connect an OpenArm bimanual follower, an OpenArm mini teleoperator, and three RGB cameras; preview camera streams; collect and label LeRobot v3 episodes; maintain canonical and session manifests; and execute a separate `move_to_ready.py` waypoint script.
 
-The present control and recording path is:
+The pre-refactor control and recording path was:
 
 ```text
 teleop.get_action()
@@ -27,7 +32,7 @@ teleop.get_action()
 dataset action <- act_processed_teleop
 ```
 
-Therefore the action written to the dataset is not explicitly the post-offset, post-safety, post-clamp follower-space command passed to the robot driver. This becomes incorrect as soon as relative mapping or workbench-side safety transforms are introduced.
+Phase 0 corrected the shared-command provenance. Phase 1 now inserts the Workbench-owned follower safety layer before the shared `effective_command` snapshot.
 
 Other confirmed limitations are:
 
@@ -157,9 +162,9 @@ Create:
 
 - `src/workbench/command.py`: immutable command-stage data object containing `master_action_raw`, `master_action_processed`, `relative_target`, `safe_command`, `effective_command`, `send_result`, and `safety_events`.
 - `src/workbench/openarm_mini_compat.py`: versioned OpenArm Mini master-to-follower compatibility mapping and native-mapping detection; this module does not implement safety clamps.
-- `src/workbench/command_safety.py`: pure, hardware-independent master/follower mapping and safety processor that applies configured joint mapping, gripper mapping, deadband, soft limits, maximum step, and hard limits and returns the immutable command stages plus bounded safety events.
+- `src/workbench/safety.py`: pure, hardware-independent follower-space safety processor. It applies deadband, soft limits, maximum step, velocity limit, and hard limits; it never performs master/follower or gripper endpoint mapping.
 - `tests/test_command_semantics.py`: command provenance, dataset action source, and driver-return mismatch tests.
-- `tests/test_command_safety.py`: per-side gripper endpoint mapping, direction reversal, deadband, soft-limit, maximum-step, hard-clamp, missing-calibration, and non-finite-input tests.
+- `tests/test_safety.py`: follower-space deadband, soft-limit, maximum-step, velocity, hard-clamp, ordering, incomplete-configuration, and non-finite-input tests, including proof that compatibility mapping is not repeated.
 - `tests/test_dataset_schema_gate.py`: new/resumed dataset schema compatibility tests.
 
 Modify:
@@ -181,7 +186,7 @@ Modify:
 1. The controller creates one command record for each control step.
 2. The versioned OpenArm Mini compatibility mapping runs before absolute/relative teleop mapping and before every safety transform. It reproduces the complete `818892a3` semantics, not only gripper conversion.
 3. Workbench mapping and native LeRobot mapping are mutually exclusive. Explicit `apply_openarm_mini_compat_mapping` and `compat_mapping_version` configuration plus runtime native-mapping detection fail closed on double application.
-4. Safety processing order for phase 0 is fixed as deadband, soft-limit clamp, maximum-step clamp relative to current follower qpos, then hard joint-limit clamp. Every changed value produces a bounded safety event.
+4. Safety order is deadband, soft limit, max step (first frame from qpos; later from previous effective), velocity (previous effective + monotonic dt), tracking monitor/freeze hold substitution, then final hard limit. Live qpos does not rewrite later commands.
 5. `effective_command` is complete, finite, immutable, and in follower action-feature space after all workbench-side limits and clamps.
 6. `robot.send_action()` receives values copied only from that `CommandFrame.effective_command`.
 7. The dataset frame is built only from that same `CommandFrame.effective_command`; it is never reconstructed from master or processed-master action.
@@ -215,6 +220,8 @@ Modify:
 - Mapping configuration with missing endpoints, equal master endpoints, non-finite values, inverted soft bounds, or non-positive maximum step fails closed.
 - Synthetic commands prove the documented mapping/deadband/soft-limit/max-step/hard-clamp order.
 - Raw master and final effective command intentionally differ; the exact values passed to the fake driver, dataset writer, and safety log are equal to the same command-frame snapshot.
+- Follower qpos jitter cannot reverse a monotonic target ramp after the first frame; tracking error is recorded independently.
+- UI success labeling stores `label=success` even when gates force `accepted=false`; no client-provided accepted value is trusted.
 - A one-frame driver mismatch is logged but does not contaminate before the configured persistence count.
 - A persistent driver mismatch contaminates the episode and makes both label-success and accepted export fail closed; dataset action remains effective command.
 - Unverified mapping permits preview, diagnostics, and throwaway recording, but contaminates every episode and blocks acceptance and accepted export.
@@ -340,7 +347,7 @@ Build independent bimanual sync and relative joint control on top of the phase-0
 Create:
 
 - `src/workbench/teleop_relative.py`: multi-frame sync snapshots, per-arm offsets, relative mapping, gain, deadband, and configured gripper mapping.
-- `src/workbench/command_safety.py`: extend the phase-0 processor with relative-mode velocity and stale-command handling while preserving one final effective-command path.
+- `src/workbench/safety.py`: reuse the Phase 1 follower-space processor from relative mode and add stale-command handling without introducing a second effective-command path.
 - `tests/test_teleop_relative.py`: no-jump sync, per-arm sync, gain, deadband, and gripper-mode tests.
 - `tests/test_safety.py`: clamp/limit/violation and event tests.
 - `tests/test_emergency_freeze.py`: hold-target, recording contamination, and state invalidation tests.
@@ -633,7 +640,7 @@ Confirmed:
    - `relative_joint_offset`
 9. `command_frame_version` starts at integer `1`.
 10. Semantic mismatch is a fatal export error.
-11. Phase 0 now owns the minimum command safety processor required to make `effective_command` truthful: master/follower mapping, calibrated gripper mapping, deadband, soft limit, maximum step, and hard clamp all run before the driver call.
+11. Compatibility normalization owns master/follower semantics and calibrated gripper mapping. The Workbench safety layer accepts follower-space targets only; deadband, soft limit, maximum step, velocity limit, and hard clamp all run before `effective_command` and the driver call.
 12. The same immutable `CommandFrame.effective_command` is the sole source for driver input, v2 dataset action, and safety/mismatch comparison.
 13. Missing gripper calibration blocks production recording, acceptance, and accepted export.
 14. Persistent driver mismatch contaminates the active episode and permanently prevents acceptance.

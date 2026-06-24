@@ -5,7 +5,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import cv2
 import numpy as np
@@ -43,6 +43,7 @@ from .openarm_mini_compat import (
     detect_lerobot_revision,
     lerobot_applies_compat_mapping_natively,
 )
+from .safety import FollowerSafetyProcessor, SafetyResult
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,9 @@ class WorkbenchController:
             mapping_version=settings.compat_mapping_version,
             native_mapping_detected=self.native_compat_mapping,
         )
+        self.safety_processor = (
+            FollowerSafetyProcessor(settings.safety) if settings.safety is not None else None
+        )
         self.session_id = session_id or time.strftime("%Y%m%d_%H%M%S")
         self.session_dir = settings.session_root / self.session_id
         self.manifest = EpisodeManifest(self.session_dir)
@@ -117,11 +121,10 @@ class WorkbenchController:
             teleop_mode=settings.teleop_mode,
             command_frame_version=settings.dataset.command_frame_version,
             lerobot_revision=self.lerobot_revision,
-            compat_mapping_applied=(
-                settings.apply_openarm_mini_compat_mapping or self.native_compat_mapping
-            ),
+            compat_mapping_applied=(settings.apply_openarm_mini_compat_mapping or self.native_compat_mapping),
             compat_mapping_version=settings.compat_mapping_version,
             compat_mapping_verified=settings.compat_mapping_verified,
+            safety_metadata=(settings.safety.to_metadata() if settings.safety is not None else None),
         )
 
         self.lock = threading.RLock()
@@ -150,6 +153,18 @@ class WorkbenchController:
         self.last_save_duration_s: float | None = None
         self.last_reconnect_attempt = 0.0
         self.last_driver_mismatches: dict[str, Any] | None = None
+        self.last_effective_command: dict[str, float] | None = None
+        self.last_effective_time_ns: int | None = None
+        self.current_contamination_reasons: set[str] = set()
+        self.current_dq_reasons: set[str] = set()
+        self.current_command_validation: dict[str, Any] = {}
+        self.current_tracking_validation: dict[str, Any] = {}
+        self.safety_frozen = False
+        self._mismatch_streak = 0
+        self._tracking_contamination_streak = 0
+        self._tracking_warning_logged = False
+        self._reset_episode_command_validation()
+        self._reset_episode_tracking_validation()
 
         self.jpeg_quality = int(settings.control.get("jpeg_quality", 80))
         self.camera_timeout_s = float(settings.control.get("camera_timeout_s", 2.0))
@@ -194,10 +209,16 @@ class WorkbenchController:
         with self.lock:
             if self.recording:
                 raise RuntimeError("episode already recording")
+            if self.safety_frozen:
+                raise RuntimeError(
+                    "safety is frozen after follower tracking error; reconnect devices before collection"
+                )
             if self.settings.teleop_mode == RELATIVE_JOINT_MODE:
                 raise RuntimeError("relative_joint_offset is not available until phase 2")
             self._ensure_dataset()
-            self.current_task = (task or self.current_task or self.settings.control.get("default_task") or "").strip()
+            self.current_task = (
+                task or self.current_task or self.settings.control.get("default_task") or ""
+            ).strip()
             if not self.current_task:
                 raise ValueError("task is required")
             self.current_episode_index = int(getattr(self.dataset, "num_episodes", 0))
@@ -206,6 +227,12 @@ class WorkbenchController:
             self.current_record_start = time.perf_counter()
             self.last_save_duration_s = None
             self.discard_requested = False
+            self.current_contamination_reasons = set()
+            self.current_dq_reasons = set()
+            if self.settings.safety is not None and not self.settings.safety.safety_config_verified:
+                self.current_contamination_reasons.add("safety_config_unverified")
+            self._reset_episode_command_validation()
+            self._reset_episode_tracking_validation()
             self.recording = True
             self.state = "recording"
             self.message = "recording"
@@ -251,6 +278,12 @@ class WorkbenchController:
             self.last_save_duration_s = round(save_duration, 3)
             if saved:
                 self.last_saved_episode_index = episode_index
+                contamination_reasons = set(self.current_contamination_reasons)
+                if not self.settings.compat_mapping_verified:
+                    contamination_reasons.add("compat_mapping_unverified")
+                safety_metadata = (
+                    self.settings.safety.to_metadata() if self.settings.safety is not None else {}
+                )
                 record = EpisodeRecord(
                     episode_index=episode_index,
                     task=task,
@@ -269,17 +302,40 @@ class WorkbenchController:
                     command_frame_version=self.settings.dataset.command_frame_version,
                     lerobot_revision=self.lerobot_revision,
                     compat_mapping_applied=(
-                        self.settings.apply_openarm_mini_compat_mapping
-                        or self.native_compat_mapping
+                        self.settings.apply_openarm_mini_compat_mapping or self.native_compat_mapping
                     ),
                     compat_mapping_version=self.settings.compat_mapping_version,
                     compat_mapping_verified=self.settings.compat_mapping_verified,
-                    contaminated=not self.settings.compat_mapping_verified,
-                    contamination_reasons=(
-                        ()
-                        if self.settings.compat_mapping_verified
-                        else ("compat_mapping_unverified",)
+                    contaminated=bool(contamination_reasons),
+                    contamination_reasons=tuple(sorted(contamination_reasons)),
+                    safety_config_version=str(safety_metadata.get("safety_config_version", "unconfigured")),
+                    safety_config_verified=bool(safety_metadata.get("safety_config_verified", False)),
+                    verified_by=str(safety_metadata.get("verified_by", "")),
+                    verified_at=str(safety_metadata.get("verified_at", "")),
+                    verification_basis=str(safety_metadata.get("verification_basis", "")),
+                    hard_limits=dict(safety_metadata.get("hard_limits", {})),
+                    soft_limits=dict(safety_metadata.get("soft_limits", {})),
+                    deadband=dict(safety_metadata.get("deadband", {})),
+                    max_step=dict(safety_metadata.get("max_step", {})),
+                    velocity_limit=dict(safety_metadata.get("velocity_limit", {})),
+                    tracking_error_warning=dict(safety_metadata.get("tracking_error_warning", {})),
+                    tracking_error_contamination=dict(
+                        safety_metadata.get("tracking_error_contamination", {})
                     ),
+                    tracking_error_freeze=dict(safety_metadata.get("tracking_error_freeze", {})),
+                    driver_mismatch_atol=float(safety_metadata.get("driver_mismatch_atol", 0.0)),
+                    mismatch_contamination_frames=int(
+                        safety_metadata.get("mismatch_contamination_frames", 1)
+                    ),
+                    tracking_error_persistence_frames=int(
+                        safety_metadata.get("tracking_error_persistence_frames", 1)
+                    ),
+                    command_validation=dict(self.current_command_validation),
+                    tracking_validation=dict(self.current_tracking_validation),
+                    dq_status=(
+                        "fail" if contamination_reasons else "warning" if self.current_dq_reasons else "pass"
+                    ),
+                    dq_reasons=tuple(sorted(contamination_reasons | self.current_dq_reasons)),
                 )
                 self.dataset_manifest.task_text = task
                 self.dataset_manifest.append_episode(record)
@@ -320,7 +376,9 @@ class WorkbenchController:
                         self.dataset.clear_episode_buffer()
                 self.state = "idle"
                 self.message = "current episode discarded"
-                self.manifest.event("info", "episode_discard", "Current episode discarded", episode_index=episode_index)
+                self.manifest.event(
+                    "info", "episode_discard", "Current episode discarded", episode_index=episode_index
+                )
                 return {"ok": True, "episode_index": episode_index}
 
             if self.last_saved_episode_index is None:
@@ -338,7 +396,6 @@ class WorkbenchController:
     def label_episode(
         self,
         label: str,
-        accepted: bool | None = None,
         notes: str = "",
         episode_index: int | None = None,
     ) -> dict[str, Any]:
@@ -350,11 +407,6 @@ class WorkbenchController:
             target = self.last_saved_episode_index if episode_index is None else episode_index
             if target is None:
                 raise RuntimeError("no saved episode to label")
-            expected_accepted = label == "success" and self.settings.compat_mapping_verified
-            if accepted is None:
-                accepted = expected_accepted
-            if bool(accepted) != expected_accepted:
-                raise ValueError("accepted must match label and compatibility-mapping verification")
             record = self.dataset_manifest.update_label(target, label=label, notes=notes)
             self.manifest.replace_episodes(self.dataset_manifest.read_episodes())
             self.state = "idle"
@@ -366,6 +418,7 @@ class WorkbenchController:
                 episode_index=target,
                 label=label,
                 accepted=record["accepted"],
+                acceptance_reasons=record.get("acceptance_reasons", []),
             )
             return {"ok": True, "episode_index": target, "record": record}
 
@@ -386,7 +439,9 @@ class WorkbenchController:
             self._connect_devices()
             self.state = "idle"
             self.message = "RealSense reset complete" if result.get("ok") else "RealSense reset failed"
-            self.manifest.event("info" if result.get("ok") else "error", "realsense_reset", self.message, **result)
+            self.manifest.event(
+                "info" if result.get("ok") else "error", "realsense_reset", self.message, **result
+            )
         return result
 
     def get_status(self) -> dict[str, Any]:
@@ -428,8 +483,7 @@ class WorkbenchController:
                     "command_frame_version": self.settings.dataset.command_frame_version,
                     "lerobot_revision": self.lerobot_revision,
                     "compat_mapping_applied": (
-                        self.settings.apply_openarm_mini_compat_mapping
-                        or self.native_compat_mapping
+                        self.settings.apply_openarm_mini_compat_mapping or self.native_compat_mapping
                     ),
                     "compat_mapping_version": self.settings.compat_mapping_version,
                     "compat_mapping_verified": self.settings.compat_mapping_verified,
@@ -448,6 +502,7 @@ class WorkbenchController:
                     "default_task": str(self.settings.control.get("default_task", "")),
                     "teleop_when_idle": self.teleop_when_idle,
                     "has_realsense": "realsense" in self.settings.cameras,
+                    "safety_frozen": self.safety_frozen,
                 },
             }
 
@@ -518,6 +573,9 @@ class WorkbenchController:
         self.message = "connecting teleop"
         with _press_enter_for_existing_calibration():
             self.teleop.connect()
+        self.safety_frozen = False
+        self.last_effective_command = None
+        self.last_effective_time_ns = None
         self.state = "idle"
         self.message = "ready"
         self.manifest.event("info", "devices_connected", "Robot, teleop, and cameras connected")
@@ -537,6 +595,8 @@ class WorkbenchController:
             )
 
     def _disconnect_devices(self) -> None:
+        self.last_effective_command = None
+        self.last_effective_time_ns = None
         try:
             if self.teleop is not None:
                 self.teleop.disconnect()
@@ -565,7 +625,9 @@ class WorkbenchController:
                     if camera.is_connected or has_capture or has_thread:
                         camera.disconnect()
                 except Exception as exc:  # noqa: BLE001
-                    self.manifest.event("warning", "camera_force_release_failed", str(exc), camera=camera_name)
+                    self.manifest.event(
+                        "warning", "camera_force_release_failed", str(exc), camera=camera_name
+                    )
             bus = getattr(arm, "bus", None)
             if bus is None:
                 continue
@@ -794,7 +856,7 @@ class WorkbenchController:
             robot = self.robot
             teleop = self.teleop
             is_recording = self.recording
-            can_teleop = is_recording or self.teleop_when_idle
+            can_teleop = (is_recording or self.teleop_when_idle) and not self.safety_frozen
             dataset = self.dataset
             task = self.current_task
 
@@ -813,14 +875,47 @@ class WorkbenchController:
         act_compat = self.compat_mapper.map_action(act)
         act_processed_teleop = self.teleop_action_processor((act_compat, obs))
         robot_action_to_send = self.robot_action_processor((act_processed_teleop, obs))
-        command = CommandFrame.absolute_passthrough(
-            master_action_raw=act,
-            master_action_processed=act_processed_teleop,
-            effective_command=robot_action_to_send,
-        )
+        now_ns = time.monotonic_ns()
+        safety_result: SafetyResult | None = None
+        if self.safety_processor is None:
+            command = CommandFrame.absolute_passthrough(
+                master_action_raw=act,
+                master_action_processed=act_processed_teleop,
+                effective_command=robot_action_to_send,
+            )
+        else:
+            dt_s = (
+                1.0 / self.settings.dataset.fps
+                if self.last_effective_time_ns is None
+                else max((now_ns - self.last_effective_time_ns) / 1_000_000_000, 1e-9)
+            )
+            safety_result = self.safety_processor.process(
+                follower_target=robot_action_to_send,
+                follower_qpos=obs_processed,
+                previous_effective=self.last_effective_command,
+                dt_s=dt_s,
+            )
+            command = CommandFrame(
+                master_action_raw=act,
+                master_action_processed=act_processed_teleop,
+                relative_target=robot_action_to_send,
+                safe_command=safety_result.command,
+                effective_command=safety_result.command,
+                safety_events=safety_result.events,
+            )
+            self.last_effective_command = dict(command.effective_command)
+            self.last_effective_time_ns = now_ns
+            self._track_follower_tracking(safety_result)
         send_result = robot.send_action(dict(command.effective_command))
         command = command.with_send_result(send_result)
-        mismatches = command_mismatches(command.effective_command, command.send_result)
+        mismatch_atol = (
+            self.settings.safety.driver_mismatch_atol if self.settings.safety is not None else 1e-6
+        )
+        mismatches = command_mismatches(
+            command.effective_command,
+            command.send_result,
+            atol=mismatch_atol,
+        )
         has_mismatch = bool(mismatches["changed"] or mismatches["missing"] or mismatches["extra"])
         if has_mismatch and mismatches != self.last_driver_mismatches:
             self.manifest.event(
@@ -830,6 +925,24 @@ class WorkbenchController:
                 mismatches=mismatches,
             )
         self.last_driver_mismatches = mismatches if has_mismatch else None
+        self._track_driver_mismatch(mismatches, has_mismatch=has_mismatch)
+
+        if safety_result is not None and safety_result.freeze_requested:
+            if is_recording:
+                try:
+                    self.stop_episode()
+                except Exception as exc:  # noqa: BLE001
+                    self.manifest.event(
+                        "error",
+                        "tracking_freeze_save_failed",
+                        f"{type(exc).__name__}: {exc}",
+                    )
+            with self.lock:
+                self.recording = False
+                self.safety_frozen = True
+                self.state = "frozen"
+                self.message = "follower tracking error freeze; reconnect required"
+            return
 
         with self.lock:
             is_recording = self.recording
@@ -849,6 +962,151 @@ class WorkbenchController:
                 with self.dataset_lock:
                     if self.dataset is dataset:
                         dataset.add_frame(frame)
+
+    def _reset_episode_command_validation(self) -> None:
+        self._mismatch_streak = 0
+        self.current_command_validation = {
+            "mismatch_frames": 0,
+            "max_abs_error": 0.0,
+            "affected_joints": [],
+            "max_consecutive_mismatch_frames": 0,
+        }
+
+    def _reset_episode_tracking_validation(self) -> None:
+        self._tracking_contamination_streak = 0
+        self._tracking_warning_logged = False
+        self.current_tracking_validation = {
+            "warning_frames": 0,
+            "contamination_frames": 0,
+            "freeze_frames": 0,
+            "max_abs_error": 0.0,
+            "affected_joints": [],
+            "max_consecutive_contamination_frames": 0,
+        }
+
+    def _track_follower_tracking(self, result: SafetyResult) -> None:
+        levels = dict(result.tracking_levels)
+        contamination_present = any(level in {"contamination", "freeze"} for level in levels.values())
+        if contamination_present:
+            self._tracking_contamination_streak += 1
+        else:
+            self._tracking_contamination_streak = 0
+
+        if not self.recording:
+            if result.freeze_requested:
+                self.safety_frozen = True
+                self.manifest.event(
+                    "error",
+                    "follower_tracking_freeze",
+                    "Follower tracking error triggered safety freeze",
+                    tracking_levels=levels,
+                )
+            return
+        if not levels:
+            return
+
+        if not self._tracking_warning_logged:
+            self._tracking_warning_logged = True
+            self.manifest.event(
+                "warning",
+                "follower_tracking_warning",
+                "Follower tracking error exceeded a configured threshold",
+                tracking_levels=levels,
+                tracking_errors={key: float(result.tracking_errors[key]) for key in levels},
+            )
+
+        summary = self.current_tracking_validation
+        summary["warning_frames"] = int(summary["warning_frames"]) + 1
+        if contamination_present:
+            summary["contamination_frames"] = int(summary["contamination_frames"]) + 1
+        if result.freeze_requested:
+            summary["freeze_frames"] = int(summary["freeze_frames"]) + 1
+        summary["max_consecutive_contamination_frames"] = max(
+            int(summary["max_consecutive_contamination_frames"]),
+            self._tracking_contamination_streak,
+        )
+        affected = set(summary["affected_joints"])
+        affected.update(levels)
+        summary["affected_joints"] = sorted(affected)
+        summary["max_abs_error"] = max(
+            float(summary["max_abs_error"]),
+            max(float(result.tracking_errors[key]) for key in levels),
+        )
+        self.current_dq_reasons.add("follower_tracking_error")
+
+        if result.freeze_requested:
+            reason = "follower_tracking_freeze"
+            self.current_contamination_reasons.add(reason)
+            self.safety_frozen = True
+            self.manifest.event(
+                "error",
+                "follower_tracking_freeze",
+                "Follower tracking error triggered safety freeze",
+                reason=reason,
+                tracking_validation=dict(summary),
+                tracking_levels=levels,
+            )
+            return
+
+        threshold = self.settings.safety.tracking_error_persistence_frames
+        reason = "persistent_follower_tracking_error"
+        if (
+            self._tracking_contamination_streak >= threshold
+            and reason not in self.current_contamination_reasons
+        ):
+            self.current_contamination_reasons.add(reason)
+            self.manifest.event(
+                "error",
+                "episode_contaminated",
+                "Persistent follower tracking error contaminated the active episode",
+                reason=reason,
+                tracking_validation=dict(summary),
+            )
+
+    def _track_driver_mismatch(
+        self,
+        mismatches: Mapping[str, Any],
+        *,
+        has_mismatch: bool,
+    ) -> None:
+        if not self.recording:
+            return
+        if not has_mismatch:
+            self._mismatch_streak = 0
+            return
+
+        self._mismatch_streak += 1
+        summary = self.current_command_validation
+        summary["mismatch_frames"] = int(summary["mismatch_frames"]) + 1
+        summary["max_consecutive_mismatch_frames"] = max(
+            int(summary["max_consecutive_mismatch_frames"]),
+            self._mismatch_streak,
+        )
+        affected = set(summary["affected_joints"])
+        affected.update(mismatches["changed"])
+        affected.update(mismatches["missing"])
+        affected.update(mismatches["extra"])
+        summary["affected_joints"] = sorted(affected)
+        for values in mismatches["changed"].values():
+            try:
+                error = abs(float(values["actual"]) - float(values["expected"]))
+            except (TypeError, ValueError):
+                continue
+            summary["max_abs_error"] = max(float(summary["max_abs_error"]), error)
+
+        threshold = (
+            self.settings.safety.mismatch_contamination_frames if self.settings.safety is not None else 1
+        )
+        reason = "persistent_driver_command_mismatch"
+        if self._mismatch_streak >= threshold and reason not in self.current_contamination_reasons:
+            self.current_contamination_reasons.add(reason)
+            self.manifest.event(
+                "error",
+                "episode_contaminated",
+                "Persistent driver command mismatch contaminated the active episode",
+                reason=reason,
+                command_validation=dict(self.current_command_validation),
+            )
 
     def _update_preview_frames(self, obs: dict[str, Any]) -> None:
         now = time.time()
@@ -876,5 +1134,7 @@ class WorkbenchController:
         labels: dict[str, str] = {}
         for name, item in self.frame_cache.items():
             timestamp = item.get("timestamp")
-            labels[name] = "ok" if timestamp is not None and now - timestamp <= self.camera_timeout_s else "timeout"
+            labels[name] = (
+                "ok" if timestamp is not None and now - timestamp <= self.camera_timeout_s else "timeout"
+            )
         return labels

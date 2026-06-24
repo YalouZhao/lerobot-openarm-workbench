@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .safety import SafetySettings, parse_safety_settings
+
 
 LEGACY_DATASET_SCHEMA = "openarm_workbench_v1_legacy"
 V2_DATASET_SCHEMA = "openarm_workbench_v2"
@@ -63,6 +65,7 @@ class WorkbenchSettings:
     teleop: dict[str, Any]
     cameras: dict[str, dict[str, Any]]
     control: dict[str, Any]
+    safety: SafetySettings | None = None
 
     @property
     def teleop_mode(self) -> str:
@@ -86,6 +89,9 @@ def load_settings(path: str | Path) -> WorkbenchSettings:
     data = json.loads(config_path.read_text())
     dataset = data["dataset"]
     teleop = dict(data["teleop"])
+    if "safety" not in data:
+        raise ValueError("missing required safety configuration: safety")
+    safety = parse_safety_settings(data["safety"])
     try:
         dataset_schema_version = str(dataset["dataset_schema_version"])
         action_semantics = str(dataset["action_semantics"])
@@ -133,6 +139,7 @@ def load_settings(path: str | Path) -> WorkbenchSettings:
         teleop=teleop,
         cameras={str(k): dict(v) for k, v in data["cameras"].items()},
         control=dict(data.get("control", {})),
+        safety=safety,
     )
 
 

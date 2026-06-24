@@ -299,11 +299,11 @@ INDEX_HTML = """<!doctype html>
       catch (err) { log(`停止失败：${err.message}`); }
     };
     $("success").onclick = async () => {
-      try { const data = await api("/api/episode/label", {label: "success", accepted: true}); log(`episode ${data.episode_index} 标记为 success`); refresh(); }
+      try { const data = await api("/api/episode/label", {label: "success"}); const gate = data.record.accepted ? "accepted" : `accepted=false：${(data.record.acceptance_reasons || []).join(", ")}`; log(`episode ${data.episode_index} 标记为 success；${gate}`); refresh(); }
       catch (err) { log(`标注失败：${err.message}`); }
     };
     $("failure").onclick = async () => {
-      try { const data = await api("/api/episode/label", {label: "failure", accepted: false}); log(`episode ${data.episode_index} 标记为 failure`); refresh(); }
+      try { const data = await api("/api/episode/label", {label: "failure"}); log(`episode ${data.episode_index} 标记为 failure`); refresh(); }
       catch (err) { log(`标注失败：${err.message}`); }
     };
     $("discard").onclick = async () => {

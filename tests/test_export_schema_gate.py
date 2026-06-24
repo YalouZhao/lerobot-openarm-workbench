@@ -13,6 +13,31 @@ from workbench.dataset_manifest import (
     export_v2_accepted_indices,
 )
 from workbench.episode_manifest import EpisodeRecord
+from workbench.safety import EXPECTED_FOLLOWER_ACTION_KEYS
+
+
+def safety_metadata(*, verified: bool = True) -> dict:
+    limits = {
+        key: ([-65.0, 0.0] if "gripper" in key else [-100.0, 100.0]) for key in EXPECTED_FOLLOWER_ACTION_KEYS
+    }
+    return {
+        "safety_config_version": "test_safety_v1",
+        "safety_config_verified": verified,
+        "verified_by": "hardware_operator",
+        "verified_at": "2026-06-24T16:30:00+08:00",
+        "verification_basis": "driver_mismatch=0; max_step_violations=0; no freeze/contamination",
+        "hard_limits": limits,
+        "soft_limits": limits,
+        "deadband": {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS},
+        "max_step": {key: 2.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS},
+        "velocity_limit": {key: 60.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS},
+        "tracking_error_warning": {key: 5.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS},
+        "tracking_error_contamination": {key: 10.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS},
+        "tracking_error_freeze": {key: 20.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS},
+        "driver_mismatch_atol": 1e-4,
+        "mismatch_contamination_frames": 3,
+        "tracking_error_persistence_frames": 3,
+    }
 
 
 def make_manifest(root: Path, *, legacy: bool = False) -> CanonicalDatasetManifest:
@@ -34,6 +59,7 @@ def make_manifest(root: Path, *, legacy: bool = False) -> CanonicalDatasetManife
         f"local/{root.name}",
         "test task",
         "session-1",
+        safety_metadata=safety_metadata(),
     )
 
 
@@ -50,6 +76,28 @@ def record(index: int) -> EpisodeRecord:
         fps=30.0,
         save_duration_s=0.1,
         cameras={"main": "ok", "wrist_left": "ok", "wrist_right": "ok"},
+        safety_config_version="test_safety_v1",
+        safety_config_verified=True,
+        verified_by="hardware_operator",
+        verified_at="2026-06-24T16:30:00+08:00",
+        verification_basis="driver_mismatch=0; max_step_violations=0; no freeze/contamination",
+        hard_limits=safety_metadata()["hard_limits"],
+        soft_limits=safety_metadata()["soft_limits"],
+        deadband=safety_metadata()["deadband"],
+        max_step=safety_metadata()["max_step"],
+        velocity_limit=safety_metadata()["velocity_limit"],
+        tracking_error_warning=safety_metadata()["tracking_error_warning"],
+        tracking_error_contamination=safety_metadata()["tracking_error_contamination"],
+        tracking_error_freeze=safety_metadata()["tracking_error_freeze"],
+        driver_mismatch_atol=1e-4,
+        mismatch_contamination_frames=3,
+        tracking_error_persistence_frames=3,
+        command_validation={
+            "mismatch_frames": 0,
+            "max_abs_error": 0.0,
+            "affected_joints": [],
+            "max_consecutive_mismatch_frames": 0,
+        },
     )
 
 
@@ -96,6 +144,34 @@ def test_action_semantics_mismatch_blocks_export(tmp_path: Path) -> None:
         export_v2_accepted_indices(root)
 
 
+def test_missing_safety_metadata_blocks_export(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    manifest = make_manifest(root)
+    manifest.ensure_initialized()
+    payload = json.loads((root / "dataset_manifest.json").read_text())
+    del payload["safety_config_version"]
+    (root / "dataset_manifest.json").write_text(json.dumps(payload))
+
+    with pytest.raises(DatasetSchemaError, match="safety_config_version"):
+        export_v2_accepted_indices(root)
+
+
+def test_unverified_safety_config_blocks_export(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    manifest = CanonicalDatasetManifest(
+        root,
+        root.name,
+        f"local/{root.name}",
+        "test task",
+        "session-1",
+        safety_metadata=safety_metadata(verified=False),
+    )
+    manifest.ensure_initialized()
+
+    with pytest.raises(DatasetSchemaError, match="safety_config_verified"):
+        export_v2_accepted_indices(root)
+
+
 def test_unverified_compat_mapping_cannot_be_accepted_or_exported(tmp_path: Path) -> None:
     root = tmp_path / "dataset"
     manifest = CanonicalDatasetManifest(
@@ -108,6 +184,7 @@ def test_unverified_compat_mapping_cannot_be_accepted_or_exported(tmp_path: Path
         compat_mapping_applied=True,
         compat_mapping_version="openarm_mini_818892a3",
         compat_mapping_verified=False,
+        safety_metadata=safety_metadata(),
     )
     manifest.ensure_initialized()
     unverified_record = record(0)

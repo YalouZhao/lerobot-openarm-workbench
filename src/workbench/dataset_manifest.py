@@ -4,7 +4,7 @@ import json
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 from .atomic_io import atomic_write_json, atomic_write_jsonl, atomic_write_text
 from .config import (
@@ -26,6 +26,24 @@ SEMANTIC_FIELDS = (
     "command_frame_version",
     "compat_mapping_applied",
     "compat_mapping_version",
+)
+SAFETY_SEMANTIC_FIELDS = (
+    "safety_config_version",
+    "safety_config_verified",
+    "verified_by",
+    "verified_at",
+    "verification_basis",
+    "hard_limits",
+    "soft_limits",
+    "deadband",
+    "max_step",
+    "velocity_limit",
+    "tracking_error_warning",
+    "tracking_error_contamination",
+    "tracking_error_freeze",
+    "driver_mismatch_atol",
+    "mismatch_contamination_frames",
+    "tracking_error_persistence_frames",
 )
 
 
@@ -61,16 +79,20 @@ def export_v2_accepted_indices(dataset_root: Path, output_path: Path | None = No
     if payload["compat_mapping_applied"] is not True:
         raise DatasetSchemaError("v2 accepted export requires compat_mapping_applied=true")
     if payload["compat_mapping_version"] != "openarm_mini_818892a3":
-        raise DatasetSchemaError(
-            "v2 accepted export requires compat_mapping_version='openarm_mini_818892a3'"
-        )
+        raise DatasetSchemaError("v2 accepted export requires compat_mapping_version='openarm_mini_818892a3'")
     if payload.get("compat_mapping_verified") is not True:
         raise DatasetSchemaError("v2 accepted export requires compat_mapping_verified=true")
+    missing_safety = [field for field in SAFETY_SEMANTIC_FIELDS if field not in payload]
+    if missing_safety:
+        raise DatasetSchemaError(f"legacy_unknown dataset root: missing semantic fields {missing_safety}")
+    if payload.get("safety_config_verified") is not True:
+        raise DatasetSchemaError("v2 accepted export requires safety_config_verified=true")
 
     records = read_jsonl(dataset_root / "episodes.jsonl")
-    expected_episode_semantics = {field: payload[field] for field in SEMANTIC_FIELDS}
+    required_fields = SEMANTIC_FIELDS + SAFETY_SEMANTIC_FIELDS
+    expected_episode_semantics = {field: payload[field] for field in required_fields}
     for item in records:
-        actual_episode_semantics = {field: item.get(field) for field in SEMANTIC_FIELDS}
+        actual_episode_semantics = {field: item.get(field) for field in required_fields}
         if actual_episode_semantics != expected_episode_semantics:
             raise DatasetSchemaError(
                 f"episode {item.get('episode_index')} semantic mismatch: "
@@ -93,6 +115,30 @@ def accepted_for_label(label: str) -> bool:
     if label not in VALID_LABELS:
         raise ValueError("label must be success, failure, discard, or unlabeled")
     return label == "success"
+
+
+def derive_acceptance(
+    item: Mapping[str, Any],
+    *,
+    label: str,
+    compat_mapping_verified: bool,
+    safety_config_verified: bool,
+) -> tuple[bool, list[str]]:
+    accepted_for_label(label)
+    reasons: list[str] = []
+    if label != "success":
+        reasons.append(f"label_not_success:{label}")
+    dq_status = str(item.get("dq_status", "unknown"))
+    if dq_status != "pass":
+        reasons.append(f"dq_status_not_pass:{dq_status}")
+    if not compat_mapping_verified:
+        reasons.append("compat_mapping_unverified")
+    if not safety_config_verified:
+        reasons.append("safety_config_unverified")
+    if item.get("contaminated") is True:
+        contamination_reasons = item.get("contamination_reasons") or ["unspecified"]
+        reasons.extend(f"contaminated:{reason}" for reason in contamination_reasons)
+    return not reasons, reasons
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -138,6 +184,7 @@ class CanonicalDatasetManifest:
         compat_mapping_applied: bool = True,
         compat_mapping_version: str = "openarm_mini_818892a3",
         compat_mapping_verified: bool = True,
+        safety_metadata: Mapping[str, Any] | None = None,
     ) -> None:
         self.dataset_root = dataset_root
         self.dataset_name = dataset_name
@@ -158,6 +205,7 @@ class CanonicalDatasetManifest:
         self.compat_mapping_applied = compat_mapping_applied
         self.compat_mapping_version = compat_mapping_version
         self.compat_mapping_verified = compat_mapping_verified
+        self.safety_metadata = dict(safety_metadata) if safety_metadata is not None else None
         self.dataset_manifest_path = dataset_root / "dataset_manifest.json"
         self.episodes_path = dataset_root / "episodes.jsonl"
         self.accepted_episodes_path = dataset_root / "accepted_episodes.json"
@@ -208,7 +256,6 @@ class CanonicalDatasetManifest:
             return payload
 
     def update_label(self, episode_index: int, label: str, notes: str = "") -> dict[str, Any]:
-        accepted = accepted_for_label(label) and self.compat_mapping_verified
         self.validate_for_collection()
         with file_lock(self.lock_path):
             self._ensure_initialized_unlocked()
@@ -216,8 +263,20 @@ class CanonicalDatasetManifest:
             updated: dict[str, Any] | None = None
             for item in records:
                 if int(item["episode_index"]) == int(episode_index):
+                    safety_verified = (
+                        True
+                        if self.safety_metadata is None
+                        else self.safety_metadata.get("safety_config_verified") is True
+                    )
+                    accepted, acceptance_reasons = derive_acceptance(
+                        item,
+                        label=label,
+                        compat_mapping_verified=self.compat_mapping_verified,
+                        safety_config_verified=safety_verified,
+                    )
                     item["label"] = label
                     item["accepted"] = accepted
+                    item["acceptance_reasons"] = acceptance_reasons
                     item["notes"] = notes
                     item["labeled_at"] = now_iso()
                     item["updated_at"] = now_iso()
@@ -249,6 +308,7 @@ class CanonicalDatasetManifest:
                 "compat_mapping_applied": self.compat_mapping_applied,
                 "compat_mapping_version": self.compat_mapping_version,
                 "compat_mapping_verified": self.compat_mapping_verified,
+                **(self.safety_metadata or {}),
                 "created_at": now,
                 "updated_at": now,
                 "dataset_name": self.dataset_name,
@@ -285,7 +345,7 @@ class CanonicalDatasetManifest:
     def _record_payload(self, record: EpisodeRecord) -> dict[str, Any]:
         payload = asdict(record)
         expected = self._expected_semantics()
-        actual = {field: payload.get(field) for field in SEMANTIC_FIELDS}
+        actual = {field: payload.get(field) for field in expected}
         if actual != expected:
             raise DatasetSchemaError(f"episode semantic mismatch: expected {expected}, got {actual}")
         payload.setdefault("notes", "")
@@ -304,14 +364,19 @@ class CanonicalDatasetManifest:
         accepted = [
             int(item["episode_index"])
             for item in records
-            if item.get("label") == "success" and item.get("accepted") is True
+            if item.get("label") == "success"
+            and item.get("accepted") is True
             and item.get("contaminated") is not True
         ]
         atomic_write_json(
             self.accepted_episodes_path,
             {
                 "updated_at": now_iso(),
-                "criteria": {"label": "success", "accepted": True},
+                "criteria": {
+                    "label": "success",
+                    "dq_status": "pass",
+                    "accepted": True,
+                },
                 "episodes": accepted,
             },
         )
@@ -349,7 +414,7 @@ class CanonicalDatasetManifest:
         return json.loads(self.dataset_manifest_path.read_text(encoding="utf-8"))
 
     def _expected_semantics(self) -> dict[str, Any]:
-        return {
+        expected = {
             "dataset_schema_version": self.dataset_schema_version,
             "action_semantics": self.action_semantics,
             "teleop_mode": self.teleop_mode,
@@ -357,15 +422,18 @@ class CanonicalDatasetManifest:
             "compat_mapping_applied": self.compat_mapping_applied,
             "compat_mapping_version": self.compat_mapping_version,
         }
+        if self.safety_metadata is not None:
+            expected.update(self.safety_metadata)
+        return expected
 
     def _validate_existing_semantics(self, payload: dict[str, Any]) -> None:
-        missing = [field for field in SEMANTIC_FIELDS if field not in payload]
+        expected = self._expected_semantics()
+        missing = [field for field in expected if field not in payload]
         if missing:
             raise DatasetSchemaError(
                 f"legacy_unknown dataset root: missing semantic fields {missing}; "
                 "append is blocked until explicit audit or migration"
             )
-        expected = self._expected_semantics()
         for field, expected_value in expected.items():
             actual_value = payload[field]
             if actual_value != expected_value:

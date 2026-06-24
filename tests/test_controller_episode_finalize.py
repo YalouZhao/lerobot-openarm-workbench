@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -58,7 +59,9 @@ def _install_fake_lerobot_modules() -> None:
     sys.modules["lerobot.datasets"].create_initial_features = lambda *args, **kwargs: {}
     sys.modules["lerobot.processor"].make_default_processors = lambda: (None, None, None)
     sys.modules["lerobot.robots"].make_robot_from_config = lambda cfg: None
-    sys.modules["lerobot.robots.bi_openarm_follower.config_bi_openarm_follower"].BiOpenArmFollowerConfig = object
+    sys.modules[
+        "lerobot.robots.bi_openarm_follower.config_bi_openarm_follower"
+    ].BiOpenArmFollowerConfig = object
     sys.modules["lerobot.robots.openarm_follower.config_openarm_follower"].OpenArmFollowerConfigBase = object
     sys.modules["lerobot.teleoperators"].make_teleoperator_from_config = lambda cfg: None
     sys.modules["lerobot.teleoperators.openarm_mini.config_openarm_mini"].OpenArmMiniConfig = object
@@ -74,10 +77,63 @@ _install_fake_lerobot_modules()
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-import workbench.controller as controller_module
-from workbench.config import DatasetSettings, WorkbenchSettings
-from workbench.controller import WorkbenchController
-from workbench.dataset_manifest import DatasetSchemaError
+import workbench.controller as controller_module  # noqa: E402
+from workbench.config import DatasetSettings, WorkbenchSettings  # noqa: E402
+from workbench.controller import WorkbenchController  # noqa: E402
+from workbench.dataset_manifest import DatasetSchemaError  # noqa: E402
+from workbench.safety import EXPECTED_FOLLOWER_ACTION_KEYS, parse_safety_settings  # noqa: E402
+
+
+def make_safety_settings(*, verified: bool = True):
+    hard_limits = {
+        "right_joint_1.pos": [-75.0, 75.0],
+        "right_joint_2.pos": [-9.0, 90.0],
+        "right_joint_3.pos": [-85.0, 85.0],
+        "right_joint_4.pos": [0.0, 135.0],
+        "right_joint_5.pos": [-85.0, 85.0],
+        "right_joint_6.pos": [-40.0, 40.0],
+        "right_joint_7.pos": [-80.0, 80.0],
+        "right_gripper.pos": [-65.0, 0.0],
+        "left_joint_1.pos": [-75.0, 75.0],
+        "left_joint_2.pos": [-90.0, 9.0],
+        "left_joint_3.pos": [-85.0, 85.0],
+        "left_joint_4.pos": [0.0, 135.0],
+        "left_joint_5.pos": [-85.0, 85.0],
+        "left_joint_6.pos": [-40.0, 40.0],
+        "left_joint_7.pos": [-80.0, 80.0],
+        "left_gripper.pos": [-65.0, 0.0],
+    }
+    return parse_safety_settings(
+        {
+            "safety_config_version": "test_safety_v1",
+            "safety_config_verified": verified,
+            **(
+                {
+                    "verified_by": "hardware_operator",
+                    "verified_at": "2026-06-24T16:30:00+08:00",
+                    "verification_basis": "test fixture verified safety config",
+                }
+                if verified
+                else {}
+            ),
+            "driver_mismatch_atol": 1e-4,
+            "mismatch_contamination_frames": 3,
+            "tracking_error_persistence_frames": 3,
+            "joints": {
+                key: {
+                    "hard_limit": hard_limits[key],
+                    "soft_limit": hard_limits[key],
+                    "deadband": 0.0,
+                    "max_step": 4.0 if "gripper" in key else 2.0,
+                    "max_velocity": 120.0 if "gripper" in key else 60.0,
+                    "tracking_error_warning": 5.0,
+                    "tracking_error_contamination": 10.0,
+                    "tracking_error_freeze": 20.0,
+                }
+                for key in EXPECTED_FOLLOWER_ACTION_KEYS
+            },
+        }
+    )
 
 
 class FakeDataset:
@@ -404,6 +460,389 @@ def test_control_step_maps_gripper_before_driver_and_dataset(
             "task": "",
         }
     ]
+
+
+def test_control_step_safety_precedes_shared_effective_command(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={
+            "id": "teleop",
+            "mode": "absolute_passthrough",
+            "apply_openarm_mini_compat_mapping": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": True,
+        },
+        cameras={},
+        control={},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="safe-command-test")
+    dataset = FakeRecordingDataset()
+
+    class FullRobot:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.sent_actions: list[dict[str, float]] = []
+
+        def get_observation(self) -> dict[str, float]:
+            return {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS}
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            self.sent_actions.append(dict(action))
+            return dict(action)
+
+    class FullTeleop:
+        is_connected = True
+
+        def get_action(self) -> dict[str, float]:
+            action = {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS}
+            action["right_joint_1.pos"] = 100.0
+            action["right_gripper.pos"] = 100.0
+            return action
+
+    robot = FullRobot()
+    controller.robot = robot
+    controller.teleop = FullTeleop()
+    controller.dataset = dataset
+    controller.recording = True
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: obs
+
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    controller._control_step()
+
+    sent = robot.sent_actions[0]
+    recorded = dataset.frames[0]["action"]
+    assert sent == recorded
+    assert sent["right_joint_1.pos"] == pytest.approx(2.0)
+    # Compatibility maps 100 -> -65 exactly once, then safety limits the first step to -4.
+    assert sent["right_gripper.pos"] == pytest.approx(-4.0)
+    assert controller.last_effective_command == sent
+
+
+def test_persistent_driver_mismatch_contaminates_active_episode(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={
+            "id": "teleop",
+            "mode": "absolute_passthrough",
+            "apply_openarm_mini_compat_mapping": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": True,
+        },
+        cameras={},
+        control={},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="mismatch-test")
+
+    class MismatchRobot:
+        is_connected = True
+
+        def get_observation(self) -> dict[str, float]:
+            return {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS}
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            returned = dict(action)
+            returned["left_joint_1.pos"] += 0.5
+            return returned
+
+    class FullTeleop:
+        is_connected = True
+
+        def get_action(self) -> dict[str, float]:
+            return {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS}
+
+    controller.robot = MismatchRobot()
+    controller.teleop = FullTeleop()
+    controller.dataset = FakeRecordingDataset()
+    controller.recording = True
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: obs
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    for _ in range(3):
+        controller._control_step()
+
+    assert "persistent_driver_command_mismatch" in controller.current_contamination_reasons
+    assert controller.current_command_validation == {
+        "mismatch_frames": 3,
+        "max_abs_error": pytest.approx(0.5),
+        "affected_joints": ["left_joint_1.pos"],
+        "max_consecutive_mismatch_frames": 3,
+    }
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "sessions" / "mismatch-test" / "events.jsonl").read_text().splitlines()
+    ]
+    assert [event["event"] for event in events].count("episode_contaminated") == 1
+
+
+def test_persistent_follower_tracking_error_contaminates_without_rewriting_command(
+    tmp_path: Path,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="tracking-test")
+    controller.recording = True
+    target = {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS}
+    qpos = dict(target)
+    previous = dict(target)
+    target["left_joint_1.pos"] = 12.0
+    previous["left_joint_1.pos"] = 12.0
+    result = controller.safety_processor.process(
+        follower_target=target,
+        follower_qpos=qpos,
+        previous_effective=previous,
+        dt_s=1 / 30,
+    )
+
+    for _ in range(3):
+        controller._track_follower_tracking(result)
+
+    assert result.command["left_joint_1.pos"] == 12.0
+    assert "persistent_follower_tracking_error" in controller.current_contamination_reasons
+    assert "follower_tracking_error" in controller.current_dq_reasons
+    assert controller.current_tracking_validation == {
+        "warning_frames": 3,
+        "contamination_frames": 3,
+        "freeze_frames": 0,
+        "max_abs_error": pytest.approx(12.0),
+        "affected_joints": ["left_joint_1.pos"],
+        "max_consecutive_contamination_frames": 3,
+    }
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "sessions" / "tracking-test" / "events.jsonl").read_text().splitlines()
+    ]
+    assert [event["event"] for event in events].count("follower_tracking_warning") == 1
+
+
+def test_tracking_freeze_sends_hold_stops_episode_and_locks_collection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="freeze-test")
+    dataset = FakeRecordingDataset()
+
+    class FreezeRobot:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.sent_actions: list[dict[str, float]] = []
+
+        def get_observation(self) -> dict[str, float]:
+            obs = {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS}
+            obs["right_joint_4.pos"] = -1.0
+            return obs
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            self.sent_actions.append(dict(action))
+            return dict(action)
+
+    class FreezeTeleop:
+        is_connected = True
+
+        def get_action(self) -> dict[str, float]:
+            action = {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS}
+            action["right_joint_4.pos"] = 30.0
+            return action
+
+    robot = FreezeRobot()
+    controller.robot = robot
+    controller.teleop = FreezeTeleop()
+    controller.dataset = dataset
+    controller.recording = True
+    controller.last_effective_command = {
+        key: (25.0 if key == "right_joint_4.pos" else 0.0) for key in EXPECTED_FOLLOWER_ACTION_KEYS
+    }
+    controller.last_effective_time_ns = time.monotonic_ns()
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: obs
+    stopped: list[bool] = []
+
+    def stop_episode() -> dict:
+        stopped.append(True)
+        controller.recording = False
+        return {"ok": True}
+
+    monkeypatch.setattr(controller, "stop_episode", stop_episode)
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    controller._control_step()
+
+    assert robot.sent_actions[-1]["right_joint_4.pos"] == 0.0
+    assert stopped == [True]
+    assert controller.safety_frozen is True
+    assert controller.state == "frozen"
+    assert "follower_tracking_freeze" in controller.current_contamination_reasons
+    assert dataset.frames == []
+    with pytest.raises(RuntimeError, match="frozen"):
+        controller.start_episode("blocked")
+
+
+def test_stop_episode_persists_safety_metadata_and_blocks_unverified_acceptance(
+    tmp_path: Path,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={
+            "id": "teleop",
+            "mode": "absolute_passthrough",
+            "apply_openarm_mini_compat_mapping": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": True,
+        },
+        cameras={},
+        control={},
+        safety=make_safety_settings(verified=False),
+    )
+    controller = WorkbenchController(settings, session_id="safety-metadata-test")
+    fake_dataset = FakeDataset()
+    controller.dataset = fake_dataset
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-24T00:00:00+08:00"
+    controller.current_frame_count = 3
+    controller.current_record_start = 1.0
+    controller.current_contamination_reasons = {"safety_config_unverified"}
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    labeled = controller.label_episode("success")
+
+    record = labeled["record"]
+    assert record["safety_config_version"] == "test_safety_v1"
+    assert record["safety_config_verified"] is False
+    assert record["hard_limits"]["left_gripper.pos"] == [-65.0, 0.0]
+    assert record["tracking_error_warning"]["left_joint_1.pos"] == 5.0
+    assert record["tracking_error_contamination"]["left_joint_1.pos"] == 10.0
+    assert record["tracking_error_freeze"]["left_joint_1.pos"] == 20.0
+    assert record["tracking_error_persistence_frames"] == 3
+    assert record["command_validation"]["mismatch_frames"] == 0
+    assert record["tracking_validation"]["warning_frames"] == 0
+    assert record["contaminated"] is True
+    assert record["contamination_reasons"] == ["safety_config_unverified"]
+    assert record["dq_status"] == "fail"
+    assert record["dq_reasons"] == ["safety_config_unverified"]
+    assert "safety_config_unverified" in record["acceptance_reasons"]
+    assert record["accepted"] is False
 
 
 def test_controller_blocks_legacy_unknown_root_before_opening_lerobot_dataset(tmp_path: Path) -> None:

@@ -47,7 +47,11 @@ def test_initializes_canonical_dataset_files(tmp_path: Path) -> None:
     assert (root / "export_reports").is_dir()
 
     accepted = json.loads((root / "accepted_episodes.json").read_text())
-    assert accepted["criteria"] == {"label": "success", "accepted": True}
+    assert accepted["criteria"] == {
+        "label": "success",
+        "accepted": True,
+        "dq_status": "pass",
+    }
     assert accepted["episodes"] == []
 
     dataset_manifest = json.loads((root / "dataset_manifest.json").read_text())

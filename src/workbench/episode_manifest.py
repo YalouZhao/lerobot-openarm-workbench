@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -42,6 +42,27 @@ class EpisodeRecord:
     compat_mapping_verified: bool = True
     contaminated: bool = False
     contamination_reasons: tuple[str, ...] = ()
+    safety_config_version: str = "unconfigured"
+    safety_config_verified: bool = False
+    verified_by: str = ""
+    verified_at: str = ""
+    verification_basis: str = ""
+    hard_limits: dict[str, list[float]] = field(default_factory=dict)
+    soft_limits: dict[str, list[float]] = field(default_factory=dict)
+    deadband: dict[str, float] = field(default_factory=dict)
+    max_step: dict[str, float] = field(default_factory=dict)
+    velocity_limit: dict[str, float] = field(default_factory=dict)
+    tracking_error_warning: dict[str, float] = field(default_factory=dict)
+    tracking_error_contamination: dict[str, float] = field(default_factory=dict)
+    tracking_error_freeze: dict[str, float] = field(default_factory=dict)
+    driver_mismatch_atol: float = 0.0
+    mismatch_contamination_frames: int = 1
+    tracking_error_persistence_frames: int = 1
+    command_validation: dict[str, Any] = field(default_factory=dict)
+    tracking_validation: dict[str, Any] = field(default_factory=dict)
+    dq_status: str = "pass"
+    dq_reasons: tuple[str, ...] = ()
+    acceptance_reasons: tuple[str, ...] = ()
 
 
 class EpisodeManifest:
