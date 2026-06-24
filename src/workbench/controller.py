@@ -21,7 +21,8 @@ from lerobot.teleoperators.openarm_mini.config_openarm_mini import OpenArmMiniCo
 from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.robot_utils import precise_sleep
 
-from .config import WorkbenchSettings
+from .command import CommandFrame, command_mismatches
+from .config import RELATIVE_JOINT_MODE, WorkbenchSettings
 from .dataset_manifest import CanonicalDatasetManifest
 from .device_probe import reset_realsense
 from .episode_manifest import EpisodeManifest, EpisodeRecord, now_iso
@@ -32,9 +33,15 @@ from .lerobot_compat import (
     build_dataset_frame,
     combine_feature_dicts,
     create_initial_features,
+    dataset_has_pending_frames,
     adapt_bi_openarm_camera_keys,
     make_bi_openarm_configuration,
     resume_lerobot_dataset,
+)
+from .openarm_mini_compat import (
+    OpenArmMiniCompatibilityMapper,
+    detect_lerobot_revision,
+    lerobot_applies_compat_mapping_natively,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,6 +96,13 @@ def _encode_jpeg_rgb(frame: np.ndarray, quality: int) -> bytes | None:
 class WorkbenchController:
     def __init__(self, settings: WorkbenchSettings, session_id: str | None = None):
         self.settings = settings
+        self.lerobot_revision = detect_lerobot_revision()
+        self.native_compat_mapping = lerobot_applies_compat_mapping_natively()
+        self.compat_mapper = OpenArmMiniCompatibilityMapper(
+            apply_mapping=settings.apply_openarm_mini_compat_mapping,
+            mapping_version=settings.compat_mapping_version,
+            native_mapping_detected=self.native_compat_mapping,
+        )
         self.session_id = session_id or time.strftime("%Y%m%d_%H%M%S")
         self.session_dir = settings.session_root / self.session_id
         self.manifest = EpisodeManifest(self.session_dir)
@@ -98,6 +112,16 @@ class WorkbenchController:
             repo_id=settings.dataset.repo_id,
             task_text=str(settings.control.get("default_task", "")),
             session_id=self.session_id,
+            dataset_schema_version=settings.dataset.dataset_schema_version,
+            action_semantics=settings.dataset.action_semantics,
+            teleop_mode=settings.teleop_mode,
+            command_frame_version=settings.dataset.command_frame_version,
+            lerobot_revision=self.lerobot_revision,
+            compat_mapping_applied=(
+                settings.apply_openarm_mini_compat_mapping or self.native_compat_mapping
+            ),
+            compat_mapping_version=settings.compat_mapping_version,
+            compat_mapping_verified=settings.compat_mapping_verified,
         )
 
         self.lock = threading.RLock()
@@ -125,6 +149,7 @@ class WorkbenchController:
         self.last_saved_episode_index: int | None = None
         self.last_save_duration_s: float | None = None
         self.last_reconnect_attempt = 0.0
+        self.last_driver_mismatches: dict[str, Any] | None = None
 
         self.jpeg_quality = int(settings.control.get("jpeg_quality", 80))
         self.camera_timeout_s = float(settings.control.get("camera_timeout_s", 2.0))
@@ -169,6 +194,8 @@ class WorkbenchController:
         with self.lock:
             if self.recording:
                 raise RuntimeError("episode already recording")
+            if self.settings.teleop_mode == RELATIVE_JOINT_MODE:
+                raise RuntimeError("relative_joint_offset is not available until phase 2")
             self._ensure_dataset()
             self.current_task = (task or self.current_task or self.settings.control.get("default_task") or "").strip()
             if not self.current_task:
@@ -209,7 +236,7 @@ class WorkbenchController:
         try:
             with self.dataset_lock:
                 dataset = self.dataset
-                if dataset is not None and dataset.has_pending_frames():
+                if dataset is not None and dataset_has_pending_frames(dataset):
                     dataset.save_episode()
                     self._finalize_dataset()
                     saved = True
@@ -236,6 +263,23 @@ class WorkbenchController:
                     fps=self._episode_fps(frame_count),
                     save_duration_s=self.last_save_duration_s,
                     cameras=self._camera_health_labels(),
+                    dataset_schema_version=self.settings.dataset.dataset_schema_version,
+                    action_semantics=self.settings.dataset.action_semantics,
+                    teleop_mode=self.settings.teleop_mode,
+                    command_frame_version=self.settings.dataset.command_frame_version,
+                    lerobot_revision=self.lerobot_revision,
+                    compat_mapping_applied=(
+                        self.settings.apply_openarm_mini_compat_mapping
+                        or self.native_compat_mapping
+                    ),
+                    compat_mapping_version=self.settings.compat_mapping_version,
+                    compat_mapping_verified=self.settings.compat_mapping_verified,
+                    contaminated=not self.settings.compat_mapping_verified,
+                    contamination_reasons=(
+                        ()
+                        if self.settings.compat_mapping_verified
+                        else ("compat_mapping_unverified",)
+                    ),
                 )
                 self.dataset_manifest.task_text = task
                 self.dataset_manifest.append_episode(record)
@@ -306,11 +350,11 @@ class WorkbenchController:
             target = self.last_saved_episode_index if episode_index is None else episode_index
             if target is None:
                 raise RuntimeError("no saved episode to label")
+            expected_accepted = label == "success" and self.settings.compat_mapping_verified
             if accepted is None:
-                accepted = label == "success"
-            expected_accepted = label == "success"
+                accepted = expected_accepted
             if bool(accepted) != expected_accepted:
-                raise ValueError("accepted must match label in this workbench version")
+                raise ValueError("accepted must match label and compatibility-mapping verification")
             record = self.dataset_manifest.update_label(target, label=label, notes=notes)
             self.manifest.replace_episodes(self.dataset_manifest.read_episodes())
             self.state = "idle"
@@ -321,7 +365,7 @@ class WorkbenchController:
                 "Episode labeled",
                 episode_index=target,
                 label=label,
-                accepted=accepted,
+                accepted=record["accepted"],
             )
             return {"ok": True, "episode_index": target, "record": record}
 
@@ -378,6 +422,17 @@ class WorkbenchController:
                     "fps": self.settings.dataset.fps,
                     "streaming_encoding": self.settings.dataset.streaming_encoding,
                     "vcodec": self.settings.dataset.vcodec,
+                    "dataset_schema_version": self.settings.dataset.dataset_schema_version,
+                    "action_semantics": self.settings.dataset.action_semantics,
+                    "teleop_mode": self.settings.teleop_mode,
+                    "command_frame_version": self.settings.dataset.command_frame_version,
+                    "lerobot_revision": self.lerobot_revision,
+                    "compat_mapping_applied": (
+                        self.settings.apply_openarm_mini_compat_mapping
+                        or self.native_compat_mapping
+                    ),
+                    "compat_mapping_version": self.settings.compat_mapping_version,
+                    "compat_mapping_verified": self.settings.compat_mapping_verified,
                 },
                 "episode": {
                     "state": self.state,
@@ -537,10 +592,11 @@ class WorkbenchController:
         assert self.robot is not None
         settings = self.settings.dataset
         settings.root.parent.mkdir(parents=True, exist_ok=True)
+        self.dataset_manifest.validate_for_collection()
 
         dataset_features = combine_feature_dicts(
             aggregate_pipeline_dataset_features(
-                pipeline=self.teleop_action_processor,
+                pipeline=self.robot_action_processor,
                 initial_features=create_initial_features(action=self.robot.action_features),
                 use_videos=True,
             ),
@@ -581,6 +637,7 @@ class WorkbenchController:
                 image_writer_threads=settings.num_image_writer_threads_per_camera * num_cameras,
                 **kwargs,
             )
+        self.dataset_manifest.ensure_initialized(new_dataset_created=not should_resume)
         self.video_manager = VideoEncodingManager(self.dataset)
         self.video_manager.__enter__()
 
@@ -753,9 +810,26 @@ class WorkbenchController:
             return
 
         act = teleop.get_action()
-        act_processed_teleop = self.teleop_action_processor((act, obs))
+        act_compat = self.compat_mapper.map_action(act)
+        act_processed_teleop = self.teleop_action_processor((act_compat, obs))
         robot_action_to_send = self.robot_action_processor((act_processed_teleop, obs))
-        robot.send_action(robot_action_to_send)
+        command = CommandFrame.absolute_passthrough(
+            master_action_raw=act,
+            master_action_processed=act_processed_teleop,
+            effective_command=robot_action_to_send,
+        )
+        send_result = robot.send_action(dict(command.effective_command))
+        command = command.with_send_result(send_result)
+        mismatches = command_mismatches(command.effective_command, command.send_result)
+        has_mismatch = bool(mismatches["changed"] or mismatches["missing"] or mismatches["extra"])
+        if has_mismatch and mismatches != self.last_driver_mismatches:
+            self.manifest.event(
+                "warning",
+                "driver_command_mismatch",
+                "Driver return differs from effective command",
+                mismatches=mismatches,
+            )
+        self.last_driver_mismatches = mismatches if has_mismatch else None
 
         with self.lock:
             is_recording = self.recording
@@ -763,7 +837,8 @@ class WorkbenchController:
             task = self.current_task
         if is_recording and dataset is not None:
             observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
-            action_frame = build_dataset_frame(dataset.features, act_processed_teleop, prefix=ACTION)
+            training_action = command.training_action(self.settings.dataset.action_semantics)
+            action_frame = build_dataset_frame(dataset.features, training_action, prefix=ACTION)
             frame = {**observation_frame, **action_frame, "task": task}
             should_add = False
             with self.lock:

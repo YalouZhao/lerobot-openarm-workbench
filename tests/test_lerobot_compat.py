@@ -76,6 +76,34 @@ def test_resume_uses_constructor_when_classmethod_is_unavailable(monkeypatch, tm
     assert dataset.kwargs == {"root": tmp_path, "vcodec": "h264"}
 
 
+def test_resume_lerobot_04_starts_image_writer_outside_constructor(monkeypatch, tmp_path: Path) -> None:
+    compat, _ = _load_compat(monkeypatch, legacy_exports=False)
+
+    class Dataset04:
+        def __init__(self, repo_id, root=None, vcodec="libsvtav1"):
+            self.repo_id = repo_id
+            self.root = root
+            self.vcodec = vcodec
+            self.writer_args = None
+
+        def start_image_writer(self, num_processes=0, num_threads=4):
+            self.writer_args = (num_processes, num_threads)
+
+    compat.LeRobotDataset = Dataset04
+
+    dataset = compat.resume_lerobot_dataset(
+        "local/test",
+        root=tmp_path,
+        vcodec="h264",
+        image_writer_processes=2,
+        image_writer_threads=6,
+    )
+
+    assert dataset.root == tmp_path
+    assert dataset.vcodec == "h264"
+    assert dataset.writer_args == (2, 6)
+
+
 def test_resume_uses_classmethod_when_available(monkeypatch, tmp_path: Path) -> None:
     compat, _ = _load_compat(monkeypatch, legacy_exports=True)
 

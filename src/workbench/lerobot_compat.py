@@ -28,7 +28,33 @@ def resume_lerobot_dataset(repo_id: str, **kwargs: Any):
     resume = getattr(LeRobotDataset, "resume", None)
     if resume is not None:
         return resume(repo_id, **kwargs)
-    return LeRobotDataset(repo_id, **kwargs)
+    image_writer_processes = int(kwargs.pop("image_writer_processes", 0))
+    image_writer_threads = int(kwargs.pop("image_writer_threads", 0))
+    dataset = LeRobotDataset(repo_id, **kwargs)
+    if image_writer_processes or image_writer_threads:
+        dataset.start_image_writer(image_writer_processes, image_writer_threads)
+    return dataset
+
+
+def dataset_has_pending_frames(dataset: Any) -> bool:
+    """Return True if the dataset's current episode buffer holds unsaved frames.
+
+    Older LeRobot releases exposed ``LeRobotDataset.has_pending_frames()``; it was
+    removed by 0.4.x. In 0.4.x the unsaved-frame state lives in ``episode_buffer``
+    (``None`` before the first ``add_frame``/``create``, otherwise a dict whose
+    ``"size"`` counts buffered frames and resets to 0 on ``clear_episode_buffer``).
+    Prefer the native method when present so this keeps working on either API.
+    """
+    native = getattr(dataset, "has_pending_frames", None)
+    if callable(native):
+        return bool(native())
+    buffer = getattr(dataset, "episode_buffer", None)
+    if not buffer:
+        return False
+    try:
+        return int(buffer.get("size", 0)) > 0
+    except AttributeError:
+        return False
 
 
 def make_bi_openarm_configuration(

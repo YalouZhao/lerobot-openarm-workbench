@@ -4,6 +4,9 @@
   "dataset": {
     "repo_id": "local/example_dataset",
     "root": "/home/robot/data/example_dataset",
+    "dataset_schema_version": "openarm_workbench_v2",
+    "action_semantics": "follower_effective_command",
+    "command_frame_version": 1,
     "fps": 30,
     "episode_time_s": 60,
     "streaming_encoding": true,
@@ -28,6 +31,10 @@
   },
   "teleop": {
     "id": "my_openarm_mini",
+    "mode": "absolute_passthrough",
+    "apply_openarm_mini_compat_mapping": true,
+    "compat_mapping_version": "openarm_mini_818892a3",
+    "compat_mapping_verified": false,
     "port_right": "/dev/ttyACM1",
     "port_left": "/dev/ttyACM0"
   },
@@ -71,4 +78,3 @@
     "reconnect_cooldown_s": 5.0
   }
 }
-

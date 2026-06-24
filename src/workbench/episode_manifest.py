@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from .atomic_io import atomic_write_jsonl
+from .config import (
+    ABSOLUTE_PASSTHROUGH_MODE,
+    COMMAND_FRAME_VERSION,
+    V2_ACTION_SEMANTICS,
+    V2_DATASET_SCHEMA,
+)
 
 
 def now_iso() -> str:
@@ -26,6 +32,16 @@ class EpisodeRecord:
     fps: float
     save_duration_s: float
     cameras: dict[str, str]
+    dataset_schema_version: str = V2_DATASET_SCHEMA
+    action_semantics: str = V2_ACTION_SEMANTICS
+    teleop_mode: str = ABSOLUTE_PASSTHROUGH_MODE
+    command_frame_version: int = COMMAND_FRAME_VERSION
+    lerobot_revision: str = "unknown"
+    compat_mapping_applied: bool = True
+    compat_mapping_version: str = "openarm_mini_818892a3"
+    compat_mapping_verified: bool = True
+    contaminated: bool = False
+    contamination_reasons: tuple[str, ...] = ()
 
 
 class EpisodeManifest:
