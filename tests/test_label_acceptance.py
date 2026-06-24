@@ -34,6 +34,17 @@ def test_web_label_requests_do_not_submit_accepted() -> None:
     assert "accepted:" not in failure_handler
 
 
+def test_web_exposes_dataset_lifecycle_controls() -> None:
+    assert 'id="datasetName"' in INDEX_HTML
+    assert 'id="datasetRoot"' in INDEX_HTML
+    assert 'id="datasetRepoId"' in INDEX_HTML
+    assert 'id="newDataset"' in INDEX_HTML
+    assert 'id="switchDataset"' in INDEX_HTML
+    assert '"/api/dataset/status"' in INDEX_HTML
+    assert '"/api/dataset/new"' in INDEX_HTML
+    assert '"/api/dataset/switch"' in INDEX_HTML
+
+
 def test_dq_warning_success_label_is_saved_but_not_accepted(tmp_path: Path) -> None:
     manifest = CanonicalDatasetManifest(
         dataset_root=tmp_path / "dataset",

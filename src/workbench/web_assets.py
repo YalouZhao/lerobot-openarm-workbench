@@ -141,6 +141,22 @@ INDEX_HTML = """<!doctype html>
       margin: 12px 0;
     }
     .kv div:nth-child(odd) { color: var(--muted); }
+    .dataset-panel {
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      padding: 10px 0;
+      margin: 12px 0;
+    }
+    .dataset-panel h2 {
+      font-size: 14px;
+      margin: 0 0 8px;
+    }
+    .dataset-panel label { margin-top: 8px; }
+    .dataset-status {
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
     .log {
       height: 190px;
       overflow: auto;
@@ -176,6 +192,25 @@ INDEX_HTML = """<!doctype html>
         <button id="discard" class="danger">丢弃 episode</button>
         <button id="resetRs">重置 RealSense</button>
       </div>
+      <section class="dataset-panel">
+        <h2>数据集</h2>
+        <div class="dataset-status" id="datasetLifecycle">读取中…</div>
+        <label for="datasetName">新测试数据集名称</label>
+        <input id="datasetName" placeholder="例如 smoke_0624">
+        <div class="buttons">
+          <button id="newDataset">创建新测试数据集</button>
+          <button id="refreshDataset">刷新数据集状态</button>
+        </div>
+        <label for="datasetRoot">切换 root</label>
+        <input id="datasetRoot" placeholder="/tmp/lerobot-.../dataset">
+        <label for="datasetRepoId">repo_id</label>
+        <input id="datasetRepoId" placeholder="local/my_dataset">
+        <label for="datasetSessionRoot">session_root（可选）</label>
+        <input id="datasetSessionRoot" placeholder="/tmp/lerobot-.../sessions">
+        <div class="buttons">
+          <button id="switchDataset">切换 dataset root</button>
+        </div>
+      </section>
       <div class="kv" id="details"></div>
       <div class="log" id="log"></div>
     </aside>
@@ -183,6 +218,7 @@ INDEX_HTML = """<!doctype html>
   <script>
     const $ = (id) => document.getElementById(id);
     let renderedCameraKey = "";
+    let lastDatasetRefreshMs = 0;
     const log = (msg) => {
       const el = $("log");
       el.textContent = `${new Date().toLocaleTimeString()} ${msg}\\n` + el.textContent;
@@ -193,6 +229,12 @@ INDEX_HTML = """<!doctype html>
         headers: {"content-type": "application/json"},
         body: JSON.stringify(body || {})
       });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText);
+      return data;
+    }
+    async function getJson(path) {
+      const res = await fetch(path);
       const data = await res.json();
       if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText);
       return data;
@@ -263,10 +305,41 @@ INDEX_HTML = """<!doctype html>
       $("failure").disabled = state === "recording" || status.episode.last_saved_episode_index == null;
       $("discard").disabled = state === "idle" && status.episode.last_saved_episode_index == null;
       $("resetRs").disabled = state === "recording" || !status.control.has_realsense;
+      $("newDataset").disabled = state === "recording";
+      $("switchDataset").disabled = state === "recording";
+    }
+    function datasetStateText(state) {
+      const map = {
+        root_missing: "root 不存在，可创建",
+        empty_root: "空目录，可初始化",
+        appendable: "可继续追加",
+        legacy_unknown: "legacy/未知，禁止追加",
+        semantic_mismatch: "语义不一致，需换 root",
+        invalid_dataset_root: "无效 root"
+      };
+      return map[state] || state || "unknown";
+    }
+    async function refreshDatasetStatus(force) {
+      const now = Date.now();
+      if (!force && now - lastDatasetRefreshMs < 5000) return null;
+      lastDatasetRefreshMs = now;
+      const data = await getJson("/api/dataset/status");
+      const cls = data.can_append || data.can_create ? "good" : "warn";
+      $("datasetLifecycle").innerHTML = [
+        pill(datasetStateText(data.root_state), cls),
+        `<div>root: ${data.root}</div>`,
+        `<div>repo_id: ${data.repo_id}</div>`,
+        `<div>session_root: ${data.session_root}</div>`,
+        data.reason ? `<div>原因: ${data.reason}</div>` : ""
+      ].join("");
+      if (!$("datasetRoot").value) $("datasetRoot").value = data.root || "";
+      if (!$("datasetRepoId").value) $("datasetRepoId").value = data.repo_id || "";
+      if (!$("datasetSessionRoot").value) $("datasetSessionRoot").value = data.session_root || "";
+      return data;
     }
     async function refresh() {
       try {
-        const status = await (await fetch("/api/status")).json();
+        const status = await getJson("/api/status");
         if (!$("task").value) $("task").value = status.control.default_task || "";
         const cams = status.cameras || {};
         renderCameras(cams);
@@ -286,6 +359,7 @@ INDEX_HTML = """<!doctype html>
           ["状态消息", status.message || ""]
         ].map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join("");
         updateButtons(status);
+        refreshDatasetStatus(false).catch((err) => log(`数据集状态刷新失败：${err.message}`));
       } catch (err) {
         log(`状态刷新失败：${err.message}`);
       }
@@ -313,6 +387,18 @@ INDEX_HTML = """<!doctype html>
     $("resetRs").onclick = async () => {
       try { const data = await api("/api/realsense/reset", {}); log(`RealSense 重置结果：${data.ok}`); refresh(); }
       catch (err) { log(`重置失败：${err.message}`); }
+    };
+    $("refreshDataset").onclick = async () => {
+      try { await refreshDatasetStatus(true); log("数据集状态已刷新"); }
+      catch (err) { log(`数据集状态刷新失败：${err.message}`); }
+    };
+    $("newDataset").onclick = async () => {
+      try { const data = await api("/api/dataset/new", {name: $("datasetName").value}); log(`已创建/切换新测试数据集：${data.dataset.root}`); $("datasetRoot").value = data.dataset.root; $("datasetRepoId").value = data.dataset.repo_id; $("datasetSessionRoot").value = data.dataset.session_root; refresh(); }
+      catch (err) { log(`创建新数据集失败：${err.message}`); }
+    };
+    $("switchDataset").onclick = async () => {
+      try { const data = await api("/api/dataset/switch", {root: $("datasetRoot").value, repo_id: $("datasetRepoId").value, session_root: $("datasetSessionRoot").value}); log(`已切换数据集：${data.dataset.root}`); refresh(); }
+      catch (err) { log(`切换数据集失败：${err.message}`); }
     };
     refresh();
     setInterval(refresh, 1000);
