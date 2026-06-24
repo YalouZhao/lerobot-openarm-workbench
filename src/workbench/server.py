@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .controller import WorkbenchController
+from .dataset_manifest import DatasetSchemaError
 from .web_assets import INDEX_HTML
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,9 @@ def make_handler(controller: WorkbenchController):
                 return
             if parsed.path == "/api/status":
                 self._send_json(controller.get_status())
+                return
+            if parsed.path == "/api/dataset/status":
+                self._send_json(controller.dataset_status())
                 return
             if parsed.path.startswith("/stream/"):
                 camera = parsed.path.rsplit("/", 1)[-1]
@@ -60,7 +64,45 @@ def make_handler(controller: WorkbenchController):
                 if parsed.path == "/api/realsense/reset":
                     self._send_json(controller.reset_realsense())
                     return
+                if parsed.path == "/api/dataset/new":
+                    self._send_json(controller.new_dataset(body.get("name") or body.get("suffix")))
+                    return
+                if parsed.path == "/api/dataset/switch":
+                    self._send_json(
+                        controller.switch_dataset(
+                            root=str(body.get("root", "")),
+                            repo_id=str(body.get("repo_id", "")),
+                            session_root=body.get("session_root"),
+                        )
+                    )
+                    return
                 self.send_error(HTTPStatus.NOT_FOUND)
+            except DatasetSchemaError as exc:
+                logger.exception("dataset lifecycle request failed")
+                dataset = controller.dataset_status()
+                root_state = str(dataset.get("root_state", "unknown"))
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": root_state
+                        if root_state in {"legacy_unknown", "semantic_mismatch", "invalid_dataset_root"}
+                        else "dataset_create_failed",
+                        "error": str(exc),
+                        "dataset": dataset,
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            except FileExistsError:
+                logger.exception("dataset create failed")
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "dataset_create_failed",
+                        "error": "dataset root already exists but could not be initialized safely",
+                        "dataset": controller.dataset_status(),
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("request failed")
                 self._send_json(

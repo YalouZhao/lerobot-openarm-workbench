@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -23,7 +24,7 @@ from lerobot.utils.robot_utils import precise_sleep
 
 from .command import CommandFrame, command_mismatches
 from .config import RELATIVE_JOINT_MODE, WorkbenchSettings
-from .dataset_manifest import CanonicalDatasetManifest
+from .dataset_manifest import CanonicalDatasetManifest, DatasetSchemaError
 from .device_probe import reset_realsense
 from .episode_manifest import EpisodeManifest, EpisodeRecord, now_iso
 from .lerobot_compat import (
@@ -506,6 +507,114 @@ class WorkbenchController:
                 },
             }
 
+    def dataset_status(
+        self,
+        *,
+        root: str | Path | None = None,
+        repo_id: str | None = None,
+        session_root: str | Path | None = None,
+    ) -> dict[str, Any]:
+        candidate_root = Path(root).expanduser() if root is not None else self.settings.dataset.root
+        candidate_repo_id = repo_id or self.settings.dataset.repo_id
+        candidate_session_root = (
+            Path(session_root).expanduser() if session_root is not None else self.settings.session_root
+        )
+        manifest = self._dataset_manifest_for(root=candidate_root, repo_id=candidate_repo_id)
+        status: dict[str, Any] = {
+            "root": str(candidate_root),
+            "repo_id": candidate_repo_id,
+            "session_root": str(candidate_session_root),
+            "root_state": "unknown",
+            "can_create": False,
+            "can_append": False,
+            "episode_count": 0,
+            "reason": "",
+            "semantics": self._dataset_semantic_summary(),
+        }
+        if not candidate_root.exists():
+            status.update({"root_state": "root_missing", "can_create": True})
+            return status
+        if not candidate_root.is_dir():
+            status.update({"root_state": "invalid_dataset_root", "reason": "root is not a directory"})
+            return status
+        if not any(candidate_root.iterdir()):
+            status.update({"root_state": "empty_root", "can_create": True})
+            return status
+        try:
+            state = manifest.validate_for_collection()
+            existing = manifest._read_dataset_manifest()
+            if existing is not None and existing.get("repo_id") != candidate_repo_id:
+                status.update(
+                    {
+                        "root_state": "semantic_mismatch",
+                        "reason": (
+                            f"repo_id semantic mismatch: expected {candidate_repo_id!r}, "
+                            f"got {existing.get('repo_id')!r}"
+                        ),
+                    }
+                )
+                return status
+            status.update(
+                {
+                    "root_state": "appendable" if state == "existing" else "root_missing",
+                    "can_append": state == "existing",
+                    "can_create": state == "new",
+                    "episode_count": len(manifest.read_episodes()),
+                }
+            )
+        except DatasetSchemaError as exc:
+            message = str(exc)
+            root_state = "semantic_mismatch" if "semantic mismatch" in message else "legacy_unknown"
+            status.update({"root_state": root_state, "reason": message})
+        return status
+
+    def new_dataset(self, name: str | None = None) -> dict[str, Any]:
+        with self.lock:
+            self._assert_dataset_switch_allowed()
+            safe_name = self._safe_dataset_name(name or time.strftime("dataset_%Y%m%d_%H%M%S"))
+            base = self.settings.dataset.root.parent
+            root = base / safe_name
+            suffix = 1
+            while root.exists():
+                root = base / f"{safe_name}_{suffix}"
+                suffix += 1
+            repo_id = f"local/{root.name}"
+            session_root = self.settings.session_root.parent / f"{root.name}_sessions"
+            self._finalize_dataset()
+            self._apply_dataset_settings(root=root, repo_id=repo_id, session_root=session_root)
+            return {"ok": True, "dataset": self.dataset_status()}
+
+    def switch_dataset(
+        self,
+        *,
+        root: str,
+        repo_id: str,
+        session_root: str | None = None,
+    ) -> dict[str, Any]:
+        with self.lock:
+            self._assert_dataset_switch_allowed()
+            candidate_root = Path(root).expanduser()
+            candidate_repo_id = str(repo_id).strip()
+            if not candidate_repo_id:
+                raise ValueError("repo_id is required")
+            candidate_session_root = (
+                Path(session_root).expanduser() if session_root else self.settings.session_root
+            )
+            status = self.dataset_status(
+                root=candidate_root,
+                repo_id=candidate_repo_id,
+                session_root=candidate_session_root,
+            )
+            if status["root_state"] in {"invalid_dataset_root", "legacy_unknown", "semantic_mismatch"}:
+                raise DatasetSchemaError(status["reason"] or f"dataset root is {status['root_state']}")
+            self._finalize_dataset()
+            self._apply_dataset_settings(
+                root=candidate_root,
+                repo_id=candidate_repo_id,
+                session_root=candidate_session_root,
+            )
+            return {"ok": True, "dataset": self.dataset_status()}
+
     def latest_jpeg(self, camera: str) -> bytes | None:
         with self.lock:
             item = self.frame_cache.get(camera)
@@ -714,6 +823,9 @@ class WorkbenchController:
         ) and any((root / "data").glob("**/*.parquet"))
 
     def _prepare_dataset_root_for_recording(self, root: Path) -> bool:
+        if root.exists() and root.is_dir() and not any(root.iterdir()):
+            root.rmdir()
+            return False
         info_json = root / "meta" / "info.json"
         if not info_json.exists():
             return False
@@ -734,6 +846,60 @@ class WorkbenchController:
             archive=str(archive),
         )
         return False
+
+    def _dataset_manifest_for(self, *, root: Path, repo_id: str) -> CanonicalDatasetManifest:
+        return CanonicalDatasetManifest(
+            dataset_root=root,
+            dataset_name=root.name,
+            repo_id=repo_id,
+            task_text=self.current_task or str(self.settings.control.get("default_task", "")),
+            session_id=self.session_id,
+            dataset_schema_version=self.settings.dataset.dataset_schema_version,
+            action_semantics=self.settings.dataset.action_semantics,
+            teleop_mode=self.settings.teleop_mode,
+            command_frame_version=self.settings.dataset.command_frame_version,
+            lerobot_revision=self.lerobot_revision,
+            compat_mapping_applied=(
+                self.settings.apply_openarm_mini_compat_mapping or self.native_compat_mapping
+            ),
+            compat_mapping_version=self.settings.compat_mapping_version,
+            compat_mapping_verified=self.settings.compat_mapping_verified,
+            safety_metadata=(self.settings.safety.to_metadata() if self.settings.safety is not None else None),
+        )
+
+    def _dataset_semantic_summary(self) -> dict[str, Any]:
+        safety_metadata = self.settings.safety.to_metadata() if self.settings.safety is not None else {}
+        return {
+            "dataset_schema_version": self.settings.dataset.dataset_schema_version,
+            "action_semantics": self.settings.dataset.action_semantics,
+            "teleop_mode": self.settings.teleop_mode,
+            "command_frame_version": self.settings.dataset.command_frame_version,
+            "compat_mapping_version": self.settings.compat_mapping_version,
+            "compat_mapping_verified": self.settings.compat_mapping_verified,
+            "safety_config_version": safety_metadata.get("safety_config_version"),
+            "safety_config_verified": safety_metadata.get("safety_config_verified"),
+        }
+
+    def _assert_dataset_switch_allowed(self) -> None:
+        if self.recording:
+            raise RuntimeError("cannot change dataset while recording")
+        if self.state not in {"idle", "error", "unlabeled", "frozen"}:
+            raise RuntimeError(f"cannot change dataset while state={self.state}")
+
+    @staticmethod
+    def _safe_dataset_name(name: str) -> str:
+        safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name.strip())
+        safe = safe.strip("._-")
+        if not safe:
+            raise ValueError("dataset name must contain letters or numbers")
+        return safe
+
+    def _apply_dataset_settings(self, *, root: Path, repo_id: str, session_root: Path) -> None:
+        dataset = replace(self.settings.dataset, root=root, repo_id=repo_id)
+        self.settings = replace(self.settings, dataset=dataset, session_root=session_root)
+        self.session_dir = self.settings.session_root / self.session_id
+        self.manifest = EpisodeManifest(self.session_dir)
+        self.dataset_manifest = self._dataset_manifest_for(root=root, repo_id=repo_id)
 
     def _finalize_dataset(self) -> None:
         if self.video_manager is not None:

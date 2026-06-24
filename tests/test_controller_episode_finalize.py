@@ -882,6 +882,171 @@ def test_controller_blocks_legacy_unknown_root_before_opening_lerobot_dataset(tm
         controller._ensure_dataset()
 
 
+def test_empty_dataset_root_is_removed_before_lerobot_create(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "dataset"
+    root.mkdir()
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=root,
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="empty-root-test")
+    controller.robot = type(
+        "FeatureRobot",
+        (),
+        {
+            "name": "fake_robot",
+            "cameras": {},
+            "action_features": {"joint.pos": float},
+            "observation_features": {"joint.pos": float},
+        },
+    )()
+
+    class FakeDatasetFactory:
+        @staticmethod
+        def create(*args, **kwargs):
+            assert not Path(kwargs["root"]).exists()
+            return object()
+
+    class FakeVideoManager:
+        def __init__(self, dataset):
+            self.dataset = dataset
+
+        def __enter__(self):
+            return self
+
+    monkeypatch.setattr(controller_module, "LeRobotDataset", FakeDatasetFactory)
+    monkeypatch.setattr(controller_module, "VideoEncodingManager", FakeVideoManager)
+
+    controller._ensure_dataset()
+
+    assert (root / "dataset_manifest.json").exists()
+
+
+def test_dataset_status_reports_root_lifecycle_states(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "missing",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="dataset-status-test")
+
+    missing = controller.dataset_status()
+    assert missing["root_state"] == "root_missing"
+    assert missing["can_create"] is True
+
+    empty_root = tmp_path / "empty"
+    empty_root.mkdir()
+    empty = controller.dataset_status(root=empty_root)
+    assert empty["root_state"] == "empty_root"
+    assert empty["can_create"] is True
+
+    legacy_root = tmp_path / "legacy"
+    (legacy_root / "meta").mkdir(parents=True)
+    (legacy_root / "meta" / "info.json").write_text("{}")
+    legacy = controller.dataset_status(root=legacy_root)
+    assert legacy["root_state"] == "legacy_unknown"
+    assert legacy["can_append"] is False
+
+    appendable_root = tmp_path / "appendable"
+    manifest = controller._dataset_manifest_for(
+        root=appendable_root,
+        repo_id="local/appendable",
+    )
+    manifest.ensure_initialized()
+    appendable = controller.dataset_status(root=appendable_root, repo_id="local/appendable")
+    assert appendable["root_state"] == "appendable"
+    assert appendable["can_append"] is True
+
+    mismatch = controller.dataset_status(root=appendable_root, repo_id="local/other")
+    assert mismatch["root_state"] == "semantic_mismatch"
+    assert mismatch["can_append"] is False
+
+
+def test_dataset_new_and_switch_update_runtime_settings_when_idle(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="dataset-api-test")
+    controller.state = "idle"
+
+    created = controller.new_dataset("smoke")
+
+    assert created["ok"] is True
+    assert created["dataset"]["root_state"] == "root_missing"
+    assert controller.settings.dataset.root.name.endswith("smoke")
+
+    target = tmp_path / "switched"
+    switched = controller.switch_dataset(
+        root=str(target),
+        repo_id="local/switched",
+        session_root=str(tmp_path / "switch-sessions"),
+    )
+
+    assert switched["ok"] is True
+    assert switched["dataset"]["root"] == str(target)
+    assert controller.settings.dataset.repo_id == "local/switched"
+    assert controller.settings.session_root == tmp_path / "switch-sessions"
+
+    controller.recording = True
+    with pytest.raises(RuntimeError, match="while recording"):
+        controller.switch_dataset(root=str(tmp_path / "other"), repo_id="local/other")
+
+
 def test_relative_joint_mode_cannot_collect_before_phase_two(tmp_path: Path) -> None:
     settings = WorkbenchSettings(
         workspace_root=tmp_path,
