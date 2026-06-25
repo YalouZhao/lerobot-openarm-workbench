@@ -354,7 +354,8 @@
     "require_ready_for_recording": false
   },
   "sync": {
-    "samples": 1,
+    "samples": 3,
+    "sample_interval_s": 0.02,
     "require_sync_for_recording": false
   }
 }

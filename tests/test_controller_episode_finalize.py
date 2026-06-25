@@ -1462,6 +1462,82 @@ def test_relative_sync_first_command_stays_at_follower_ready_pose(
     assert dataset.frames[0]["action"] == {"left_joint_1.pos": 15.0, "right_joint_1.pos": -12.0}
 
 
+def test_sync_master_uses_configured_multi_sample_median(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        sync={"samples": 3, "sample_interval_s": 0.0, "require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="multi-sample-sync-test")
+
+    class NoisyReadyRobot:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.samples = [
+                {"left_joint_1.pos": 10.0, "right_joint_1.pos": -10.0},
+                {"left_joint_1.pos": 100.0, "right_joint_1.pos": -100.0},
+                {"left_joint_1.pos": 12.0, "right_joint_1.pos": -12.0},
+            ]
+            self.index = 0
+
+        def get_observation(self) -> dict[str, float]:
+            sample = self.samples[self.index]
+            self.index += 1
+            return dict(sample)
+
+    class NoisyMasterTeleop:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.samples = [
+                {"left_joint_1.pos": 1.0, "right_joint_1.pos": -1.0},
+                {"left_joint_1.pos": 50.0, "right_joint_1.pos": -50.0},
+                {"left_joint_1.pos": 3.0, "right_joint_1.pos": -3.0},
+            ]
+            self.index = 0
+
+        def get_action(self) -> dict[str, float]:
+            sample = self.samples[self.index]
+            self.index += 1
+            return dict(sample)
+
+    robot = NoisyReadyRobot()
+    teleop = NoisyMasterTeleop()
+    controller.robot = robot
+    controller.teleop = teleop
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: dict(obs)
+
+    result = controller.sync_master()
+
+    sync = result["sync"]
+    assert sync["sample_count"] == 3
+    assert sync["follower_start"] == {"left_joint_1.pos": 12.0, "right_joint_1.pos": -12.0}
+    assert sync["follower_target_start"] == {"left_joint_1.pos": 3.0, "right_joint_1.pos": -3.0}
+    assert sync["offsets"] == {"left_joint_1.pos": 9.0, "right_joint_1.pos": -9.0}
+    assert controller.sync_offsets == sync["offsets"]
+
+
 def test_enable_dry_teleop_requires_ready_and_sync_then_sends_without_recording(
     tmp_path: Path,
     monkeypatch,

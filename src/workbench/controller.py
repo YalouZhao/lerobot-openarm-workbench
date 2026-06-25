@@ -601,32 +601,51 @@ class WorkbenchController:
         if not robot.is_connected or not teleop.is_connected:
             raise RuntimeError("robot and teleop must be connected before Sync Master")
 
-        obs = robot.get_observation()
-        obs_processed = robot_observation_processor(obs)
-        act = teleop.get_action()
-        act_compat = self.compat_mapper.map_action(act)
-        act_processed_teleop = teleop_action_processor((act_compat, obs))
-        follower_target = robot_action_processor((act_processed_teleop, obs))
+        sample_count = max(1, int(self.settings.sync.get("samples", 1)))
+        sample_interval_s = max(0.0, float(self.settings.sync.get("sample_interval_s", 0.0)))
+        obs_samples: list[dict[str, Any]] = []
+        target_samples: list[dict[str, Any]] = []
+        for sample_index in range(sample_count):
+            obs = robot.get_observation()
+            obs_processed = robot_observation_processor(obs)
+            act = teleop.get_action()
+            act_compat = self.compat_mapper.map_action(act)
+            act_processed_teleop = teleop_action_processor((act_compat, obs))
+            follower_target = robot_action_processor((act_processed_teleop, obs))
+            obs_samples.append(dict(obs_processed))
+            target_samples.append(dict(follower_target))
+            if sample_index < sample_count - 1 and sample_interval_s > 0:
+                precise_sleep(sample_interval_s)
         keys = sorted(
             key
-            for key in follower_target
-            if key in obs_processed
-            and self._is_number(follower_target[key])
-            and self._is_number(obs_processed[key])
+            for key in target_samples[0]
+            if all(
+                key in obs_sample
+                and key in target_sample
+                and self._is_number(obs_sample[key])
+                and self._is_number(target_sample[key])
+                for obs_sample, target_sample in zip(obs_samples, target_samples)
+            )
         )
         if not keys:
             raise RuntimeError("Sync Master found no shared numeric follower-space action keys")
-        offsets = {key: float(obs_processed[key]) - float(follower_target[key]) for key in keys}
+        follower_start = {
+            key: float(np.median([float(sample[key]) for sample in obs_samples])) for key in keys
+        }
+        follower_target_start = {
+            key: float(np.median([float(sample[key]) for sample in target_samples])) for key in keys
+        }
+        offsets = {key: follower_start[key] - follower_target_start[key] for key in keys}
         payload = {
             "ok": True,
             "state": "valid",
             "teleop_mode": self.settings.teleop_mode,
-            "sample_count": 1,
+            "sample_count": sample_count,
             "synced_at": now_iso(),
             "keys": keys,
             "offsets": offsets,
-            "follower_start": {key: float(obs_processed[key]) for key in keys},
-            "follower_target_start": {key: float(follower_target[key]) for key in keys},
+            "follower_start": follower_start,
+            "follower_target_start": follower_target_start,
             "max_abs_offset": max(abs(value) for value in offsets.values()),
         }
         with self.lock:
