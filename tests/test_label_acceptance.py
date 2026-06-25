@@ -57,6 +57,28 @@ def test_web_exposes_sync_master_control() -> None:
     assert "status.sync?.state" in INDEX_HTML
 
 
+def test_web_exposes_dry_teleop_controls() -> None:
+    assert 'id="enableTeleop"' in INDEX_HTML
+    assert 'id="disableTeleop"' in INDEX_HTML
+    assert '"/api/teleop/enable"' in INDEX_HTML
+    assert '"/api/teleop/disable"' in INDEX_HTML
+    assert "status.control.dry_teleop_enabled" in INDEX_HTML
+    assert 'status.ready?.required_for_recording && status.ready?.state !== "verified"' in INDEX_HTML
+    assert 'status.sync?.required_for_recording && status.sync?.state !== "valid"' in INDEX_HTML
+    assert "status.control.dry_teleop_enabled" in INDEX_HTML.split('$("moveReady").disabled', 1)[1].split("\n", 1)[0]
+
+
+def test_web_exposes_safety_frozen_banner_and_disables_unsafe_controls() -> None:
+    assert "Safety Frozen" in INDEX_HTML
+    assert 'status.control.safety_frozen' in INDEX_HTML
+    assert 'state === "recording" || readyBlocked || syncBlocked || frozen' in INDEX_HTML
+    assert '$("moveReady").disabled = state === "recording" || state === "moving_ready" || status.control.dry_teleop_enabled || frozen' in INDEX_HTML
+    assert '$("syncMaster").disabled = state === "recording" || state === "moving_ready" || frozen' in INDEX_HTML
+    assert '$("enableTeleop").disabled = state === "recording" || state === "moving_ready" || status.control.dry_teleop_enabled || frozen' in INDEX_HTML
+    assert '$("newDataset").disabled = state === "recording" || frozen' in INDEX_HTML
+    assert '$("switchDataset").disabled = state === "recording" || frozen' in INDEX_HTML
+
+
 def test_dq_warning_success_label_is_saved_but_not_accepted(tmp_path: Path) -> None:
     manifest = CanonicalDatasetManifest(
         dataset_root=tmp_path / "dataset",

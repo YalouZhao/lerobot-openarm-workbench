@@ -193,6 +193,8 @@ INDEX_HTML = """<!doctype html>
         <button id="resetRs">重置 RealSense</button>
         <button id="moveReady">Move to Ready</button>
         <button id="syncMaster">Sync Master</button>
+        <button id="enableTeleop">Enable Teleop</button>
+        <button id="disableTeleop">Disable Teleop</button>
       </div>
       <section class="dataset-panel">
         <h2>数据集</h2>
@@ -301,16 +303,21 @@ INDEX_HTML = """<!doctype html>
     }
     function updateButtons(status) {
       const state = status.episode.state;
-      $("start").disabled = state === "recording";
+      const readyBlocked = status.ready?.required_for_recording && status.ready?.state !== "verified";
+      const syncBlocked = status.sync?.required_for_recording && status.sync?.state !== "valid";
+      const frozen = status.control.safety_frozen;
+      $("start").disabled = state === "recording" || readyBlocked || syncBlocked || frozen;
       $("stop").disabled = state !== "recording";
       $("success").disabled = state === "recording" || status.episode.last_saved_episode_index == null;
       $("failure").disabled = state === "recording" || status.episode.last_saved_episode_index == null;
       $("discard").disabled = state === "idle" && status.episode.last_saved_episode_index == null;
       $("resetRs").disabled = state === "recording" || !status.control.has_realsense;
-      $("moveReady").disabled = state === "recording" || state === "moving_ready";
-      $("syncMaster").disabled = state === "recording" || state === "moving_ready";
-      $("newDataset").disabled = state === "recording";
-      $("switchDataset").disabled = state === "recording";
+      $("moveReady").disabled = state === "recording" || state === "moving_ready" || status.control.dry_teleop_enabled || frozen;
+      $("syncMaster").disabled = state === "recording" || state === "moving_ready" || frozen;
+      $("enableTeleop").disabled = state === "recording" || state === "moving_ready" || status.control.dry_teleop_enabled || frozen;
+      $("disableTeleop").disabled = state === "recording" || !status.control.dry_teleop_enabled;
+      $("newDataset").disabled = state === "recording" || frozen;
+      $("switchDataset").disabled = state === "recording" || frozen;
     }
     function datasetStateText(state) {
       const map = {
@@ -347,7 +354,11 @@ INDEX_HTML = """<!doctype html>
         if (!$("task").value) $("task").value = status.control.default_task || "";
         const cams = status.cameras || {};
         renderCameras(cams);
+        const frozenBanner = status.control.safety_frozen
+          ? [pill("Safety Frozen", "bad"), pill("已自动停止并保存；episode 已污染，需重启/重连后继续", "warn")]
+          : [];
         $("topStatus").innerHTML = [
+          ...frozenBanner,
           pill(stateText(status.episode.state), status.episode.state === "recording" ? "good" : ""),
           pill(`episode ${status.episode.episode_index}`),
           pill(status.robot.connected ? "robot 正常" : "robot 等待", status.robot.connected ? "good" : "warn"),
@@ -362,6 +373,8 @@ INDEX_HTML = """<!doctype html>
           ["保存耗时", status.episode.save_duration_s == null ? "--" : `${status.episode.save_duration_s}s`],
           ["Ready", `${status.ready?.state || "unknown"}${status.ready?.required_for_recording ? " / required" : ""}`],
           ["Sync", `${status.sync?.state || "unknown"}${status.sync?.required_for_recording ? " / required" : ""}`],
+          ["Dry Teleop", status.control.dry_teleop_enabled ? "enabled" : "disabled"],
+          ["Freeze", status.control.safety_frozen ? `${status.control.freeze_reason || "frozen"} / ${status.episode.auto_stop_save_status || "--"}` : "no"],
           ["状态消息", status.message || ""]
         ].map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join("");
         updateButtons(status);
@@ -401,6 +414,14 @@ INDEX_HTML = """<!doctype html>
     $("syncMaster").onclick = async () => {
       try { const data = await api("/api/sync/master", {}); const sync = data.sync || {}; log(`Sync Master：${sync.state || "unknown"}，keys=${(sync.keys || []).length}`); refresh(); }
       catch (err) { log(`Sync Master 失败：${err.message}`); }
+    };
+    $("enableTeleop").onclick = async () => {
+      try { await api("/api/teleop/enable", {}); log("Dry teleop 已启用，可小幅检查方向，不会写入数据"); refresh(); }
+      catch (err) { log(`启用 Dry teleop 失败：${err.message}`); }
+    };
+    $("disableTeleop").onclick = async () => {
+      try { await api("/api/teleop/disable", {}); log("Dry teleop 已关闭"); refresh(); }
+      catch (err) { log(`关闭 Dry teleop 失败：${err.message}`); }
     };
     $("refreshDataset").onclick = async () => {
       try { await refreshDatasetStatus(true); log("数据集状态已刷新"); }

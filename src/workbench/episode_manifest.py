@@ -62,6 +62,8 @@ class EpisodeRecord:
     tracking_validation: dict[str, Any] = field(default_factory=dict)
     ready_state: str = "invalid"
     ready_result: dict[str, Any] = field(default_factory=dict)
+    auto_stopped_by_safety: bool = False
+    auto_stop_save_status: str = ""
     dq_status: str = "pass"
     dq_reasons: tuple[str, ...] = ()
     acceptance_reasons: tuple[str, ...] = ()

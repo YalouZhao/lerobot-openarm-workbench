@@ -113,6 +113,14 @@ class FakeController:
         self.calls.append(("sync_master", None))
         return {"ok": True, "sync": {"state": "valid", "sample_count": 1}}
 
+    def enable_teleop(self) -> dict:
+        self.calls.append(("enable_teleop", None))
+        return {"ok": True, "teleop": {"enabled": True, "mode": "dry"}}
+
+    def disable_teleop(self) -> dict:
+        self.calls.append(("disable_teleop", None))
+        return {"ok": True, "teleop": {"enabled": False, "mode": "dry"}}
+
     def start_episode(self, task=None) -> dict:
         raise DatasetSchemaError("legacy_unknown dataset root: missing dataset_manifest.json")
 
@@ -159,6 +167,10 @@ def test_dataset_lifecycle_routes_call_controller() -> None:
         assert ready["ready"]["ok"] is True
         sync = post_json(base, "/api/sync/master", {})
         assert sync["sync"]["state"] == "valid"
+        enabled = post_json(base, "/api/teleop/enable", {})
+        assert enabled["teleop"]["enabled"] is True
+        disabled = post_json(base, "/api/teleop/disable", {})
+        assert disabled["teleop"]["enabled"] is False
         assert controller.calls == [
             ("new", {"name": "smoke"}),
             (
@@ -167,6 +179,8 @@ def test_dataset_lifecycle_routes_call_controller() -> None:
             ),
             ("move_to_ready", None),
             ("sync_master", None),
+            ("enable_teleop", None),
+            ("disable_teleop", None),
         ]
     finally:
         server.shutdown()

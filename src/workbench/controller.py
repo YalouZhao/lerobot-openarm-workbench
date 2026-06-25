@@ -162,6 +162,10 @@ class WorkbenchController:
         self.sync_state = "invalid"
         self.latest_sync_result: dict[str, Any] | None = None
         self.sync_offsets: dict[str, float] | None = None
+        self.freeze_reason = ""
+        self.freeze_message = ""
+        self.auto_stopped_by_safety = False
+        self.auto_stop_save_status = ""
         self.current_contamination_reasons: set[str] = set()
         self.current_dq_reasons: set[str] = set()
         self.current_command_validation: dict[str, Any] = {}
@@ -180,6 +184,7 @@ class WorkbenchController:
         self.auto_reconnect_when_idle = bool(settings.control.get("auto_reconnect_when_idle", True))
         self.reconnect_cooldown_s = float(settings.control.get("reconnect_cooldown_s", 5.0))
         self.teleop_when_idle = bool(settings.control.get("teleop_when_idle", True))
+        self.dry_teleop_enabled = False
         self.frame_cache: dict[str, dict[str, Any]] = {
             name: {
                 "jpeg": None,
@@ -224,6 +229,7 @@ class WorkbenchController:
                 raise RuntimeError("Move to Ready must be verified before recording")
             if self._sync_required_for_recording() and self.sync_state != "valid":
                 raise RuntimeError("Sync Master must be valid before recording")
+            self.dry_teleop_enabled = False
             self._ensure_dataset()
             self.current_task = (
                 task or self.current_task or self.settings.control.get("default_task") or ""
@@ -238,6 +244,8 @@ class WorkbenchController:
             self.discard_requested = False
             self.current_contamination_reasons = set()
             self.current_dq_reasons = set()
+            self.auto_stopped_by_safety = False
+            self.auto_stop_save_status = ""
             if self.settings.safety is not None and not self.settings.safety.safety_config_verified:
                 self.current_contamination_reasons.add("safety_config_unverified")
             self._reset_episode_command_validation()
@@ -254,7 +262,7 @@ class WorkbenchController:
             )
             return {"ok": True, "episode_index": self.current_episode_index}
 
-    def stop_episode(self) -> dict[str, Any]:
+    def stop_episode(self, *, auto_stopped_by_safety: bool = False) -> dict[str, Any]:
         with self.lock:
             if not self.recording:
                 raise RuntimeError("no episode is recording")
@@ -343,6 +351,8 @@ class WorkbenchController:
                     tracking_validation=dict(self.current_tracking_validation),
                     ready_state=self.ready_state,
                     ready_result=dict(self.latest_ready_result or {}),
+                    auto_stopped_by_safety=auto_stopped_by_safety,
+                    auto_stop_save_status="saved" if auto_stopped_by_safety else "",
                     dq_status=(
                         "fail" if contamination_reasons else "warning" if self.current_dq_reasons else "pass"
                     ),
@@ -360,6 +370,7 @@ class WorkbenchController:
                     episode_index=episode_index,
                     frame_count=frame_count,
                     save_duration_s=self.last_save_duration_s,
+                    auto_stopped_by_safety=auto_stopped_by_safety,
                 )
             else:
                 self.state = "idle"
@@ -507,13 +518,18 @@ class WorkbenchController:
                     "started_at": self.current_started_at,
                     "last_saved_episode_index": self.last_saved_episode_index,
                     "save_duration_s": self.last_save_duration_s,
+                    "auto_stopped_by_safety": self.auto_stopped_by_safety,
+                    "auto_stop_save_status": self.auto_stop_save_status,
                 },
                 "cameras": cameras,
                 "control": {
                     "default_task": str(self.settings.control.get("default_task", "")),
                     "teleop_when_idle": self.teleop_when_idle,
+                    "dry_teleop_enabled": self.dry_teleop_enabled,
                     "has_realsense": "realsense" in self.settings.cameras,
                     "safety_frozen": self.safety_frozen,
+                    "freeze_reason": self.freeze_reason,
+                    "freeze_message": self.freeze_message,
                 },
                 "ready": {
                     "state": self.ready_state,
@@ -619,6 +635,31 @@ class WorkbenchController:
             self.sync_offsets = offsets
             self.manifest.event("info", "sync_master", "Sync Master verified", **payload)
         return {"ok": True, "sync": payload}
+
+    def enable_teleop(self) -> dict[str, Any]:
+        with self.lock:
+            if self.recording:
+                raise RuntimeError("cannot Enable Teleop while recording")
+            if self.safety_frozen:
+                raise RuntimeError(
+                    "safety is frozen after follower tracking error; reconnect devices before teleop"
+                )
+            if self._ready_required_for_recording() and self.ready_state != "verified":
+                raise RuntimeError("Move to Ready must be verified before Enable Teleop")
+            if self._sync_required_for_recording() and self.sync_state != "valid":
+                raise RuntimeError("Sync Master must be valid before Enable Teleop")
+            self.dry_teleop_enabled = True
+            self.state = "idle"
+            self.message = "dry teleop enabled"
+            self.manifest.event("info", "dry_teleop_enabled", "Dry teleop enabled")
+            return {"ok": True, "teleop": {"enabled": True, "mode": "dry"}}
+
+    def disable_teleop(self) -> dict[str, Any]:
+        with self.lock:
+            self.dry_teleop_enabled = False
+            self.message = "dry teleop disabled"
+            self.manifest.event("info", "dry_teleop_disabled", "Dry teleop disabled")
+            return {"ok": True, "teleop": {"enabled": False, "mode": "dry"}}
 
     def dataset_status(
         self,
@@ -796,6 +837,10 @@ class WorkbenchController:
         with _press_enter_for_existing_calibration():
             self.teleop.connect()
         self.safety_frozen = False
+        self.freeze_reason = ""
+        self.freeze_message = ""
+        self.auto_stopped_by_safety = False
+        self.auto_stop_save_status = ""
         self.last_effective_command = None
         self.last_effective_time_ns = None
         self.state = "idle"
@@ -819,6 +864,7 @@ class WorkbenchController:
     def _disconnect_devices(self) -> None:
         self.last_effective_command = None
         self.last_effective_time_ns = None
+        self.dry_teleop_enabled = False
         self._invalidate_ready("devices disconnected")
         self._invalidate_sync("devices disconnected")
         try:
@@ -1018,6 +1064,7 @@ class WorkbenchController:
             self.manifest.event("info", "ready_invalidated", reason)
         self.ready_state = "invalid"
         self.latest_ready_result = None
+        self.dry_teleop_enabled = False
 
     def _invalidate_sync(self, reason: str) -> None:
         if self.sync_state != "invalid":
@@ -1025,8 +1072,11 @@ class WorkbenchController:
         self.sync_state = "invalid"
         self.latest_sync_result = None
         self.sync_offsets = None
+        self.dry_teleop_enabled = False
 
     def _assert_dataset_switch_allowed(self) -> None:
+        if self.safety_frozen:
+            raise RuntimeError("cannot change dataset while safety is frozen")
         if self.recording:
             raise RuntimeError("cannot change dataset while recording")
         if self.state not in {"idle", "error", "unlabeled", "frozen"}:
@@ -1170,7 +1220,9 @@ class WorkbenchController:
             robot = self.robot
             teleop = self.teleop
             is_recording = self.recording
-            can_teleop = (is_recording or self.teleop_when_idle) and not self.safety_frozen
+            can_teleop = (
+                is_recording or self.dry_teleop_enabled or self.teleop_when_idle
+            ) and not self.safety_frozen
             dataset = self.dataset
             task = self.current_task
 
@@ -1243,20 +1295,10 @@ class WorkbenchController:
         self._track_driver_mismatch(mismatches, has_mismatch=has_mismatch)
 
         if safety_result is not None and safety_result.freeze_requested:
-            if is_recording:
-                try:
-                    self.stop_episode()
-                except Exception as exc:  # noqa: BLE001
-                    self.manifest.event(
-                        "error",
-                        "tracking_freeze_save_failed",
-                        f"{type(exc).__name__}: {exc}",
-                    )
-            with self.lock:
-                self.recording = False
-                self.safety_frozen = True
-                self.state = "frozen"
-                self.message = "follower tracking error freeze; reconnect required"
+            self._enter_safety_freeze(
+                "follower_tracking_freeze",
+                "Follower tracking error triggered safety freeze",
+            )
             return
 
         with self.lock:
@@ -1285,6 +1327,49 @@ class WorkbenchController:
         except (TypeError, ValueError):
             return False
         return True
+
+    def _enter_safety_freeze(self, reason: str, message: str) -> None:
+        was_recording = False
+        with self.lock:
+            was_recording = self.recording
+            self.freeze_reason = reason
+            self.freeze_message = message
+            self.auto_stopped_by_safety = was_recording
+            self.auto_stop_save_status = "pending" if was_recording else ""
+
+        save_failed = False
+        if was_recording:
+            try:
+                self.stop_episode(auto_stopped_by_safety=True)
+                with self.lock:
+                    self.auto_stop_save_status = "saved"
+            except Exception as exc:  # noqa: BLE001
+                save_failed = True
+                with self.lock:
+                    self.auto_stop_save_status = "failed"
+                self.manifest.event(
+                    "error",
+                    "tracking_freeze_save_failed",
+                    f"{type(exc).__name__}: {exc}",
+                )
+
+        with self.lock:
+            self.recording = False
+            self.dry_teleop_enabled = False
+            self.safety_frozen = True
+            self._invalidate_ready("safety freeze")
+            self._invalidate_sync("safety freeze")
+            self.freeze_reason = reason
+            self.freeze_message = message
+            self.auto_stopped_by_safety = was_recording
+            if was_recording and not self.auto_stop_save_status:
+                self.auto_stop_save_status = "failed" if save_failed else "saved"
+            self.state = "frozen_error" if save_failed else "frozen"
+            self.message = (
+                "safety freeze save failed; manual intervention required"
+                if save_failed
+                else "safety frozen; episode auto-saved; reconnect required"
+            )
 
     def _apply_sync_to_follower_target(self, follower_target: Mapping[str, Any]) -> dict[str, Any]:
         if self.settings.teleop_mode != RELATIVE_JOINT_MODE:

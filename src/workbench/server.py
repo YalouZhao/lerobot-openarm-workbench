@@ -70,6 +70,12 @@ def make_handler(controller: WorkbenchController):
                 if parsed.path == "/api/sync/master":
                     self._send_json(controller.sync_master())
                     return
+                if parsed.path == "/api/teleop/enable":
+                    self._send_json(controller.enable_teleop())
+                    return
+                if parsed.path == "/api/teleop/disable":
+                    self._send_json(controller.disable_teleop())
+                    return
                 if parsed.path == "/api/dataset/new":
                     self._send_json(controller.new_dataset(body.get("name") or body.get("suffix")))
                     return

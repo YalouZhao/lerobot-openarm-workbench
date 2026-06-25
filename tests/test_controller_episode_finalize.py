@@ -756,8 +756,9 @@ def test_tracking_freeze_sends_hold_stops_episode_and_locks_collection(
     controller.robot_observation_processor = lambda obs: obs
     stopped: list[bool] = []
 
-    def stop_episode() -> dict:
+    def stop_episode(*, auto_stopped_by_safety: bool = False) -> dict:
         stopped.append(True)
+        assert auto_stopped_by_safety is True
         controller.recording = False
         return {"ok": True}
 
@@ -774,10 +775,72 @@ def test_tracking_freeze_sends_hold_stops_episode_and_locks_collection(
     assert stopped == [True]
     assert controller.safety_frozen is True
     assert controller.state == "frozen"
+    assert controller.ready_state == "invalid"
+    assert controller.sync_state == "invalid"
+    assert controller.dry_teleop_enabled is False
+    status = controller.get_status()
+    assert status["control"]["freeze_reason"] == "follower_tracking_freeze"
+    assert "Follower tracking error" in status["control"]["freeze_message"]
+    assert status["episode"]["auto_stopped_by_safety"] is True
+    assert status["episode"]["auto_stop_save_status"] == "saved"
     assert "follower_tracking_freeze" in controller.current_contamination_reasons
     assert dataset.frames == []
     with pytest.raises(RuntimeError, match="frozen"):
         controller.start_episode("blocked")
+    with pytest.raises(RuntimeError, match="frozen"):
+        controller.switch_dataset(root=str(tmp_path / "other"), repo_id="local/other")
+
+
+def test_tracking_freeze_save_failure_enters_frozen_error(tmp_path: Path, monkeypatch) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="freeze-error-test")
+    controller.recording = True
+    controller.ready_state = "verified"
+    controller.sync_state = "valid"
+    controller.dry_teleop_enabled = True
+
+    def stop_episode(*, auto_stopped_by_safety: bool = False) -> dict:
+        assert auto_stopped_by_safety is True
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(controller, "stop_episode", stop_episode)
+    controller._enter_safety_freeze("follower_tracking_freeze", "Follower tracking error triggered safety freeze")
+
+    status = controller.get_status()
+    assert controller.state == "frozen_error"
+    assert controller.recording is False
+    assert controller.safety_frozen is True
+    assert controller.ready_state == "invalid"
+    assert controller.sync_state == "invalid"
+    assert status["episode"]["auto_stopped_by_safety"] is True
+    assert status["episode"]["auto_stop_save_status"] == "failed"
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "sessions" / "freeze-error-test" / "events.jsonl").read_text().splitlines()
+    ]
+    assert [event["event"] for event in events].count("tracking_freeze_save_failed") == 1
 
 
 def test_stop_episode_persists_safety_metadata_and_blocks_unverified_acceptance(
@@ -847,6 +910,69 @@ def test_stop_episode_persists_safety_metadata_and_blocks_unverified_acceptance(
     assert record["dq_reasons"] == ["safety_config_unverified"]
     assert "safety_config_unverified" in record["acceptance_reasons"]
     assert record["accepted"] is False
+
+
+def test_auto_safety_stop_persists_freeze_metadata_and_blocks_success_acceptance(
+    tmp_path: Path,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="auto-safety-stop-test")
+    fake_dataset = FakeDataset()
+    controller.dataset = fake_dataset
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-25T15:15:44+08:00"
+    controller.current_frame_count = 306
+    controller.current_record_start = 1.0
+    controller.current_contamination_reasons = {
+        "follower_tracking_freeze",
+        "persistent_follower_tracking_error",
+    }
+    controller.current_dq_reasons = {"follower_tracking_error"}
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    stopped = controller.stop_episode(auto_stopped_by_safety=True)
+    labeled = controller.label_episode("success")
+
+    assert stopped["ok"] is True
+    record = labeled["record"]
+    assert record["label"] == "success"
+    assert record["accepted"] is False
+    assert record["auto_stopped_by_safety"] is True
+    assert record["auto_stop_save_status"] == "saved"
+    assert record["contaminated"] is True
+    assert "follower_tracking_freeze" in record["contamination_reasons"]
+    assert "contaminated:follower_tracking_freeze" in record["acceptance_reasons"]
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "sessions" / "auto-safety-stop-test" / "events.jsonl").read_text().splitlines()
+    ]
+    stop_events = [event for event in events if event["event"] == "episode_stop"]
+    assert stop_events[-1]["frame_count"] == 306
+    assert stop_events[-1]["auto_stopped_by_safety"] is True
 
 
 def test_controller_blocks_legacy_unknown_root_before_opening_lerobot_dataset(tmp_path: Path) -> None:
@@ -1334,6 +1460,136 @@ def test_relative_sync_first_command_stays_at_follower_ready_pose(
     assert controller.sync_state == "valid"
     assert robot.sent_actions == [{"left_joint_1.pos": 15.0, "right_joint_1.pos": -12.0}]
     assert dataset.frames[0]["action"] == {"left_joint_1.pos": 15.0, "right_joint_1.pos": -12.0}
+
+
+def test_enable_dry_teleop_requires_ready_and_sync_then_sends_without_recording(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        ready={"require_ready_for_recording": True},
+        sync={"require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="dry-teleop-test")
+    dataset = FakeRecordingDataset()
+
+    class DryRobot:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.qpos = {"left_joint_1.pos": 15.0, "right_joint_1.pos": -12.0}
+            self.sent_actions: list[dict[str, float]] = []
+
+        def get_observation(self) -> dict[str, float]:
+            return dict(self.qpos)
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            self.sent_actions.append(dict(action))
+            self.qpos.update(action)
+            return dict(action)
+
+    class DryTeleop:
+        is_connected = True
+        calls = 0
+
+        def get_action(self) -> dict[str, float]:
+            self.calls += 1
+            if self.calls == 1:
+                return {"left_joint_1.pos": 1.0, "right_joint_1.pos": -1.0}
+            return {"left_joint_1.pos": 2.0, "right_joint_1.pos": -2.0}
+
+    robot = DryRobot()
+    controller.robot = robot
+    controller.teleop = DryTeleop()
+    controller.dataset = dataset
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: obs
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    with pytest.raises(RuntimeError, match="Move to Ready"):
+        controller.enable_teleop()
+
+    controller.ready_state = "verified"
+    with pytest.raises(RuntimeError, match="Sync Master"):
+        controller.enable_teleop()
+
+    controller.sync_master()
+    result = controller.enable_teleop()
+    controller._control_step()
+
+    assert result["ok"] is True
+    assert controller.dry_teleop_enabled is True
+    assert robot.sent_actions == [{"left_joint_1.pos": 16.0, "right_joint_1.pos": -13.0}]
+    assert dataset.frames == []
+
+
+def test_start_episode_after_dry_teleop_keeps_valid_sync_and_disables_dry_teleop(
+    tmp_path: Path,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        ready={"require_ready_for_recording": True},
+        sync={"require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="start-after-dry-teleop")
+    controller.state = "idle"
+    controller.ready_state = "verified"
+    controller.sync_state = "valid"
+    controller.sync_offsets = {"left_joint_1.pos": 1.0}
+    controller.latest_sync_result = {"ok": True, "state": "valid"}
+    controller.dry_teleop_enabled = True
+    controller._ensure_dataset = lambda: setattr(controller, "dataset", type("Dataset", (), {"num_episodes": 0})())
+
+    result = controller.start_episode("test task")
+
+    assert result == {"ok": True, "episode_index": 0}
+    assert controller.recording is True
+    assert controller.dry_teleop_enabled is False
+    assert controller.sync_state == "valid"
 
 
 def test_dataset_action_features_are_aggregated_with_robot_action_processor(
