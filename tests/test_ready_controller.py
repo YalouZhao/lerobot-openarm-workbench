@@ -62,6 +62,14 @@ class FakeRobot:
         return dict(action)
 
 
+class GetObservationOnlyRobot(FakeRobot):
+    def observe(self) -> dict[str, float]:
+        raise AttributeError("observe is not available")
+
+    def get_observation(self) -> dict[str, float]:
+        return dict(self.qpos)
+
+
 def test_smoothstep_has_zero_slope_endpoints() -> None:
     assert smoothstep(0.0) == 0.0
     assert smoothstep(1.0) == 1.0
@@ -92,6 +100,25 @@ def test_ready_controller_executes_waypoints_and_verifies_final_pose(tmp_path: P
     assert result.max_abs_error == 0.0
     assert len(robot.sent) >= 8
     assert robot.sent[-1] == result.final_target
+
+
+def test_ready_controller_supports_lerobot_get_observation_api(tmp_path: Path) -> None:
+    path = tmp_path / "ready_path.json"
+    write_ready_path(path)
+    robot = GetObservationOnlyRobot()
+    controller = ReadyController(
+        ReadySettings(
+            path=path,
+            fps=4,
+            tolerance=0.01,
+            settle_time_s=0.0,
+        )
+    )
+
+    result = controller.move_to_ready(robot, sleep=lambda _: None)
+
+    assert result.ok is True
+    assert result.final_target["left_joint_1.pos"] == 20.0
 
 
 def test_ready_controller_rejects_missing_required_action_keys(tmp_path: Path) -> None:

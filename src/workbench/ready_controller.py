@@ -115,7 +115,15 @@ class ReadyController:
 
     @staticmethod
     def _current_action(robot: Any) -> dict[str, float]:
-        obs = robot.observe()
+        if hasattr(robot, "get_observation"):
+            obs = robot.get_observation()
+        elif hasattr(robot, "observe"):
+            obs = robot.observe()
+        else:
+            raise AttributeError("robot must provide get_observation() or observe()")
+        missing = sorted(key for key in robot.action_features if key.endswith(".pos") and key not in obs)
+        if missing:
+            raise KeyError(f"ready observation is missing keys: {missing}")
         return {key: float(obs[key]) for key in robot.action_features if key.endswith(".pos")}
 
     @staticmethod
