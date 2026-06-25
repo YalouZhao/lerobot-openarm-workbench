@@ -45,6 +45,12 @@ def test_web_exposes_dataset_lifecycle_controls() -> None:
     assert '"/api/dataset/switch"' in INDEX_HTML
 
 
+def test_web_exposes_move_to_ready_control() -> None:
+    assert 'id="moveReady"' in INDEX_HTML
+    assert '"/api/ready/move"' in INDEX_HTML
+    assert "status.ready?.state" in INDEX_HTML
+
+
 def test_dq_warning_success_label_is_saved_but_not_accepted(tmp_path: Path) -> None:
     manifest = CanonicalDatasetManifest(
         dataset_root=tmp_path / "dataset",

@@ -60,6 +60,8 @@ class EpisodeRecord:
     tracking_error_persistence_frames: int = 1
     command_validation: dict[str, Any] = field(default_factory=dict)
     tracking_validation: dict[str, Any] = field(default_factory=dict)
+    ready_state: str = "invalid"
+    ready_result: dict[str, Any] = field(default_factory=dict)
     dq_status: str = "pass"
     dq_reasons: tuple[str, ...] = ()
     acceptance_reasons: tuple[str, ...] = ()

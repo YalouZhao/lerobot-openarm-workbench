@@ -44,6 +44,7 @@ from .openarm_mini_compat import (
     detect_lerobot_revision,
     lerobot_applies_compat_mapping_natively,
 )
+from .ready_controller import ReadyController, ReadySettings
 from .safety import FollowerSafetyProcessor, SafetyResult
 
 logger = logging.getLogger(__name__)
@@ -156,6 +157,8 @@ class WorkbenchController:
         self.last_driver_mismatches: dict[str, Any] | None = None
         self.last_effective_command: dict[str, float] | None = None
         self.last_effective_time_ns: int | None = None
+        self.ready_state = "invalid"
+        self.latest_ready_result: dict[str, Any] | None = None
         self.current_contamination_reasons: set[str] = set()
         self.current_dq_reasons: set[str] = set()
         self.current_command_validation: dict[str, Any] = {}
@@ -216,6 +219,8 @@ class WorkbenchController:
                 )
             if self.settings.teleop_mode == RELATIVE_JOINT_MODE:
                 raise RuntimeError("relative_joint_offset is not available until phase 2")
+            if self._ready_required_for_recording() and self.ready_state != "verified":
+                raise RuntimeError("Move to Ready must be verified before recording")
             self._ensure_dataset()
             self.current_task = (
                 task or self.current_task or self.settings.control.get("default_task") or ""
@@ -333,6 +338,8 @@ class WorkbenchController:
                     ),
                     command_validation=dict(self.current_command_validation),
                     tracking_validation=dict(self.current_tracking_validation),
+                    ready_state=self.ready_state,
+                    ready_result=dict(self.latest_ready_result or {}),
                     dq_status=(
                         "fail" if contamination_reasons else "warning" if self.current_dq_reasons else "pass"
                     ),
@@ -505,7 +512,52 @@ class WorkbenchController:
                     "has_realsense": "realsense" in self.settings.cameras,
                     "safety_frozen": self.safety_frozen,
                 },
+                "ready": {
+                    "state": self.ready_state,
+                    "required_for_recording": self._ready_required_for_recording(),
+                    "latest_result": self.latest_ready_result,
+                },
             }
+
+    def move_to_ready(self, *, sleep=precise_sleep) -> dict[str, Any]:
+        with self.lock:
+            if self.recording:
+                raise RuntimeError("cannot Move to Ready while recording")
+            if self.robot is None:
+                raise RuntimeError("robot is not connected")
+            robot = self.robot
+            self.ready_state = "moving"
+            self.latest_ready_result = None
+            self.state = "moving_ready"
+            self.message = "moving to ready"
+        try:
+            result = ReadyController(self._ready_settings()).move_to_ready(robot, sleep=sleep)
+        except Exception as exc:
+            with self.lock:
+                self.ready_state = "failed"
+                self.state = "idle"
+                self.message = f"Move to Ready failed: {type(exc).__name__}: {exc}"
+                self.latest_ready_result = {
+                    "ok": False,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+                self.manifest.event("error", "move_to_ready_failed", self.message)
+            raise
+        payload = result.to_dict()
+        with self.lock:
+            self.latest_ready_result = payload
+            self.ready_state = "verified" if result.ok else "failed"
+            self.state = "idle"
+            self.message = "ready verified" if result.ok else "ready verification failed"
+            self.last_effective_command = dict(result.final_target) if result.final_target else None
+            self.last_effective_time_ns = time.monotonic_ns() if result.final_target else None
+            self.manifest.event(
+                "info" if result.ok else "warning",
+                "move_to_ready",
+                self.message,
+                **payload,
+            )
+        return {"ok": result.ok, "ready": payload}
 
     def dataset_status(
         self,
@@ -880,6 +932,27 @@ class WorkbenchController:
             "safety_config_verified": safety_metadata.get("safety_config_verified"),
         }
 
+    def _ready_required_for_recording(self) -> bool:
+        return bool(self.settings.ready.get("require_ready_for_recording", False))
+
+    def _ready_settings(self) -> ReadySettings:
+        path = Path(self.settings.ready.get("path", "config/ready_path.json")).expanduser()
+        if not path.is_absolute():
+            path = self.settings.workspace_root / path
+        return ReadySettings(
+            path=path,
+            fps=int(self.settings.ready.get("fps", self.settings.dataset.fps)),
+            tolerance=float(self.settings.ready.get("tolerance", 2.0)),
+            settle_time_s=float(self.settings.ready.get("settle_time_s", 0.2)),
+            verify_after_move=bool(self.settings.ready.get("verify_after_move", True)),
+        )
+
+    def _invalidate_ready(self, reason: str) -> None:
+        if self.ready_state != "invalid":
+            self.manifest.event("info", "ready_invalidated", reason)
+        self.ready_state = "invalid"
+        self.latest_ready_result = None
+
     def _assert_dataset_switch_allowed(self) -> None:
         if self.recording:
             raise RuntimeError("cannot change dataset while recording")
@@ -900,6 +973,7 @@ class WorkbenchController:
         self.session_dir = self.settings.session_root / self.session_id
         self.manifest = EpisodeManifest(self.session_dir)
         self.dataset_manifest = self._dataset_manifest_for(root=root, repo_id=repo_id)
+        self._invalidate_ready("dataset switched")
 
     def _finalize_dataset(self) -> None:
         if self.video_manager is not None:

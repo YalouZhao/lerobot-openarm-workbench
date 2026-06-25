@@ -191,6 +191,7 @@ INDEX_HTML = """<!doctype html>
         <button id="failure">标记 failure</button>
         <button id="discard" class="danger">丢弃 episode</button>
         <button id="resetRs">重置 RealSense</button>
+        <button id="moveReady">Move to Ready</button>
       </div>
       <section class="dataset-panel">
         <h2>数据集</h2>
@@ -305,6 +306,7 @@ INDEX_HTML = """<!doctype html>
       $("failure").disabled = state === "recording" || status.episode.last_saved_episode_index == null;
       $("discard").disabled = state === "idle" && status.episode.last_saved_episode_index == null;
       $("resetRs").disabled = state === "recording" || !status.control.has_realsense;
+      $("moveReady").disabled = state === "recording" || state === "moving_ready";
       $("newDataset").disabled = state === "recording";
       $("switchDataset").disabled = state === "recording";
     }
@@ -356,6 +358,7 @@ INDEX_HTML = """<!doctype html>
           ["帧数", status.episode.frame_count],
           ["已保存", status.episode.last_saved_episode_index ?? "--"],
           ["保存耗时", status.episode.save_duration_s == null ? "--" : `${status.episode.save_duration_s}s`],
+          ["Ready", `${status.ready?.state || "unknown"}${status.ready?.required_for_recording ? " / required" : ""}`],
           ["状态消息", status.message || ""]
         ].map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join("");
         updateButtons(status);
@@ -387,6 +390,10 @@ INDEX_HTML = """<!doctype html>
     $("resetRs").onclick = async () => {
       try { const data = await api("/api/realsense/reset", {}); log(`RealSense 重置结果：${data.ok}`); refresh(); }
       catch (err) { log(`重置失败：${err.message}`); }
+    };
+    $("moveReady").onclick = async () => {
+      try { const data = await api("/api/ready/move", {}); const ready = data.ready || {}; log(`Move to Ready：${ready.ok ? "verified" : "failed"}，max_error=${ready.max_abs_error ?? "--"}`); refresh(); }
+      catch (err) { log(`Move to Ready 失败：${err.message}`); }
     };
     $("refreshDataset").onclick = async () => {
       try { await refreshDatasetStatus(true); log("数据集状态已刷新"); }

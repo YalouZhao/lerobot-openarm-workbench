@@ -344,5 +344,13 @@
     "connect_retry_delay_s": 1.5,
     "auto_reconnect_when_idle": true,
     "reconnect_cooldown_s": 5.0
+  },
+  "ready": {
+    "path": "config/ready_path.json",
+    "fps": 30,
+    "tolerance": 2.0,
+    "settle_time_s": 0.2,
+    "verify_after_move": true,
+    "require_ready_for_recording": false
   }
 }

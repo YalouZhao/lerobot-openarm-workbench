@@ -64,6 +64,9 @@ def make_handler(controller: WorkbenchController):
                 if parsed.path == "/api/realsense/reset":
                     self._send_json(controller.reset_realsense())
                     return
+                if parsed.path == "/api/ready/move":
+                    self._send_json(controller.move_to_ready())
+                    return
                 if parsed.path == "/api/dataset/new":
                     self._send_json(controller.new_dataset(body.get("name") or body.get("suffix")))
                     return

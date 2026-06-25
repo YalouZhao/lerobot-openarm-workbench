@@ -54,6 +54,14 @@ def config_payload() -> dict:
         },
         "cameras": {},
         "control": {},
+        "ready": {
+            "path": "config/ready_path.json",
+            "fps": 30,
+            "tolerance": 2.0,
+            "settle_time_s": 0.2,
+            "verify_after_move": True,
+            "require_ready_for_recording": False,
+        },
         "safety": safety_payload(),
     }
 
@@ -77,6 +85,7 @@ def test_loads_explicit_v2_semantics(tmp_path: Path) -> None:
     assert settings.safety.safety_config_version == "test_safety_v1"
     assert settings.safety.safety_config_verified is False
     assert settings.safety.joints["left_gripper.pos"].hard_limit == (-65.0, 0.0)
+    assert settings.ready["path"] == "config/ready_path.json"
 
 
 def test_v2_json_config_requires_safety_section(tmp_path: Path) -> None:
@@ -154,6 +163,8 @@ def test_example_config_declares_v2_semantics() -> None:
     assert payload["safety"]["safety_config_verified"] is True
     assert payload["safety"]["verified_by"] == "hardware_operator"
     assert "driver_mismatch=0" in payload["safety"]["verification_basis"]
+    assert payload["ready"]["path"] == "config/ready_path.json"
+    assert payload["ready"]["require_ready_for_recording"] is False
     assert payload["safety"]["tracking_error_persistence_frames"] == 3
     assert payload["safety"]["joints"]["left_joint_2.pos"]["hard_limit"] == [-90.0, 9.0]
     assert payload["safety"]["joints"]["right_joint_2.pos"]["hard_limit"] == [-9.0, 90.0]

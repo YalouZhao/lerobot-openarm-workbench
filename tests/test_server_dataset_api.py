@@ -105,6 +105,10 @@ class FakeController:
         self.calls.append(("switch", kwargs))
         return {"ok": True, "dataset": self.dataset_status() | {"root": kwargs["root"]}}
 
+    def move_to_ready(self) -> dict:
+        self.calls.append(("move_to_ready", None))
+        return {"ok": True, "ready": {"ok": True, "max_abs_error": 0.0}}
+
     def start_episode(self, task=None) -> dict:
         raise DatasetSchemaError("legacy_unknown dataset root: missing dataset_manifest.json")
 
@@ -147,12 +151,15 @@ def test_dataset_lifecycle_routes_call_controller() -> None:
             {"root": "/tmp/other", "repo_id": "local/other", "session_root": "/tmp/other-sessions"},
         )
         assert switched["dataset"]["root"] == "/tmp/other"
+        ready = post_json(base, "/api/ready/move", {})
+        assert ready["ready"]["ok"] is True
         assert controller.calls == [
             ("new", {"name": "smoke"}),
             (
                 "switch",
                 {"root": "/tmp/other", "repo_id": "local/other", "session_root": "/tmp/other-sessions"},
             ),
+            ("move_to_ready", None),
         ]
     finally:
         server.shutdown()

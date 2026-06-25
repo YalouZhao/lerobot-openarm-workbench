@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +65,7 @@ class WorkbenchSettings:
     teleop: dict[str, Any]
     cameras: dict[str, dict[str, Any]]
     control: dict[str, Any]
+    ready: dict[str, Any] = field(default_factory=dict)
     safety: SafetySettings | None = None
 
     @property
@@ -139,6 +140,7 @@ def load_settings(path: str | Path) -> WorkbenchSettings:
         teleop=teleop,
         cameras={str(k): dict(v) for k, v in data["cameras"].items()},
         control=dict(data.get("control", {})),
+        ready=dict(data.get("ready", {})),
         safety=safety,
     )
 

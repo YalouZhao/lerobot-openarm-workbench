@@ -822,6 +822,8 @@ def test_stop_episode_persists_safety_metadata_and_blocks_unverified_acceptance(
     controller.current_frame_count = 3
     controller.current_record_start = 1.0
     controller.current_contamination_reasons = {"safety_config_unverified"}
+    controller.ready_state = "verified"
+    controller.latest_ready_result = {"ok": True, "path": "config/ready_path.json", "max_abs_error": 0.5}
     controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
 
     controller.stop_episode()
@@ -837,6 +839,8 @@ def test_stop_episode_persists_safety_metadata_and_blocks_unverified_acceptance(
     assert record["tracking_error_persistence_frames"] == 3
     assert record["command_validation"]["mismatch_frames"] == 0
     assert record["tracking_validation"]["warning_frames"] == 0
+    assert record["ready_state"] == "verified"
+    assert record["ready_result"]["path"] == "config/ready_path.json"
     assert record["contaminated"] is True
     assert record["contamination_reasons"] == ["safety_config_unverified"]
     assert record["dq_status"] == "fail"
@@ -1045,6 +1049,111 @@ def test_dataset_new_and_switch_update_runtime_settings_when_idle(tmp_path: Path
     controller.recording = True
     with pytest.raises(RuntimeError, match="while recording"):
         controller.switch_dataset(root=str(tmp_path / "other"), repo_id="local/other")
+
+
+def test_start_episode_requires_verified_ready_when_configured(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={"default_task": "test task"},
+        ready={"require_ready_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="ready-gate-test")
+    controller.state = "idle"
+
+    with pytest.raises(RuntimeError, match="Move to Ready"):
+        controller.start_episode("test task")
+
+
+def test_move_to_ready_marks_ready_verified_and_allows_recording_gate(tmp_path: Path, monkeypatch) -> None:
+    ready_path = tmp_path / "ready_path.json"
+    ready_path.write_text(
+        json.dumps(
+            {
+                "units": "degrees",
+                "waypoints": [
+                    {
+                        "name": "ready",
+                        "duration_s": 0.1,
+                        "action": {"left_joint_1.pos": 1.0, "right_joint_1.pos": -1.0},
+                    }
+                ],
+            }
+        )
+    )
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={"default_task": "test task"},
+        ready={
+            "path": str(ready_path),
+            "fps": 4,
+            "tolerance": 0.01,
+            "settle_time_s": 0.0,
+            "require_ready_for_recording": True,
+        },
+    )
+    controller = WorkbenchController(settings, session_id="ready-move-test")
+    controller.state = "idle"
+
+    class ReadyRobot:
+        name = "fake_robot"
+        action_features = {"left_joint_1.pos": float, "right_joint_1.pos": float}
+
+        def __init__(self) -> None:
+            self.qpos = {"left_joint_1.pos": 0.0, "right_joint_1.pos": 0.0}
+            self.sent = []
+
+        def observe(self):
+            return dict(self.qpos)
+
+        def send_action(self, action):
+            self.sent.append(dict(action))
+            self.qpos.update(action)
+            return dict(action)
+
+    controller.robot = ReadyRobot()
+    monkeypatch.setattr(controller_module.precise_sleep, "__call__", lambda _: None, raising=False)
+
+    result = controller.move_to_ready(sleep=lambda _: None)
+
+    assert result["ok"] is True
+    assert controller.ready_state == "verified"
+    assert controller.latest_ready_result["ok"] is True
 
 
 def test_relative_joint_mode_cannot_collect_before_phase_two(tmp_path: Path) -> None:
