@@ -13,11 +13,11 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from lerobot.robots import make_robot_from_config
-from lerobot.robots.bi_openarm_follower.config_bi_openarm_follower import BiOpenArmFollowerConfig
-from lerobot.robots.openarm_follower.config_openarm_follower import OpenArmFollowerConfigBase
+from lerobot.robots import make_robot_from_config  # noqa: E402
+from lerobot.robots.bi_openarm_follower.config_bi_openarm_follower import BiOpenArmFollowerConfig  # noqa: E402
+from lerobot.robots.openarm_follower.config_openarm_follower import OpenArmFollowerConfigBase  # noqa: E402
 
-from workbench.config import default_config_path, load_settings
+from workbench.config import default_config_path, load_settings  # noqa: E402
 
 
 def press_enter_for_existing_calibration() -> Any:
@@ -34,7 +34,6 @@ def press_enter_for_existing_calibration() -> Any:
 
 def build_robot(settings):
     robot_cfg = BiOpenArmFollowerConfig(
-        id=settings.robot["id"],
         left_arm_config=OpenArmFollowerConfigBase(
             port=settings.robot["left_arm"]["port"],
             side=settings.robot["left_arm"].get("side"),
@@ -43,7 +42,6 @@ def build_robot(settings):
             port=settings.robot["right_arm"]["port"],
             side=settings.robot["right_arm"].get("side"),
         ),
-        cameras={},
     )
     return make_robot_from_config(robot_cfg)
 
