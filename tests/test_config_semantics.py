@@ -62,6 +62,10 @@ def config_payload() -> dict:
             "verify_after_move": True,
             "require_ready_for_recording": False,
         },
+        "sync": {
+            "samples": 1,
+            "require_sync_for_recording": False,
+        },
         "safety": safety_payload(),
     }
 
@@ -86,6 +90,8 @@ def test_loads_explicit_v2_semantics(tmp_path: Path) -> None:
     assert settings.safety.safety_config_verified is False
     assert settings.safety.joints["left_gripper.pos"].hard_limit == (-65.0, 0.0)
     assert settings.ready["path"] == "config/ready_path.json"
+    assert settings.sync["samples"] == 1
+    assert settings.sync["require_sync_for_recording"] is False
 
 
 def test_v2_json_config_requires_safety_section(tmp_path: Path) -> None:
@@ -165,6 +171,8 @@ def test_example_config_declares_v2_semantics() -> None:
     assert "driver_mismatch=0" in payload["safety"]["verification_basis"]
     assert payload["ready"]["path"] == "config/ready_path.json"
     assert payload["ready"]["require_ready_for_recording"] is False
+    assert payload["sync"]["samples"] == 1
+    assert payload["sync"]["require_sync_for_recording"] is False
     assert payload["safety"]["tracking_error_persistence_frames"] == 3
     assert payload["safety"]["joints"]["left_joint_2.pos"]["hard_limit"] == [-90.0, 9.0]
     assert payload["safety"]["joints"]["right_joint_2.pos"]["hard_limit"] == [-9.0, 90.0]

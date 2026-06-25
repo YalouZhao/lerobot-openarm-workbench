@@ -159,6 +159,9 @@ class WorkbenchController:
         self.last_effective_time_ns: int | None = None
         self.ready_state = "invalid"
         self.latest_ready_result: dict[str, Any] | None = None
+        self.sync_state = "invalid"
+        self.latest_sync_result: dict[str, Any] | None = None
+        self.sync_offsets: dict[str, float] | None = None
         self.current_contamination_reasons: set[str] = set()
         self.current_dq_reasons: set[str] = set()
         self.current_command_validation: dict[str, Any] = {}
@@ -217,10 +220,10 @@ class WorkbenchController:
                 raise RuntimeError(
                     "safety is frozen after follower tracking error; reconnect devices before collection"
                 )
-            if self.settings.teleop_mode == RELATIVE_JOINT_MODE:
-                raise RuntimeError("relative_joint_offset is not available until phase 2")
             if self._ready_required_for_recording() and self.ready_state != "verified":
                 raise RuntimeError("Move to Ready must be verified before recording")
+            if self._sync_required_for_recording() and self.sync_state != "valid":
+                raise RuntimeError("Sync Master must be valid before recording")
             self._ensure_dataset()
             self.current_task = (
                 task or self.current_task or self.settings.control.get("default_task") or ""
@@ -517,6 +520,11 @@ class WorkbenchController:
                     "required_for_recording": self._ready_required_for_recording(),
                     "latest_result": self.latest_ready_result,
                 },
+                "sync": {
+                    "state": self.sync_state,
+                    "required_for_recording": self._sync_required_for_recording(),
+                    "latest_result": self.latest_sync_result,
+                },
             }
 
     def move_to_ready(self, *, sleep=precise_sleep) -> dict[str, Any]:
@@ -526,6 +534,7 @@ class WorkbenchController:
             if self.robot is None:
                 raise RuntimeError("robot is not connected")
             robot = self.robot
+            self._invalidate_sync("Move to Ready requested")
             self.ready_state = "moving"
             self.latest_ready_result = None
             self.state = "moving_ready"
@@ -558,6 +567,58 @@ class WorkbenchController:
                 **payload,
             )
         return {"ok": result.ok, "ready": payload}
+
+    def sync_master(self) -> dict[str, Any]:
+        with self.lock:
+            if self.recording:
+                raise RuntimeError("cannot Sync Master while recording")
+            if self.robot is None:
+                raise RuntimeError("robot is not connected")
+            if self.teleop is None:
+                raise RuntimeError("teleop is not connected")
+            robot = self.robot
+            teleop = self.teleop
+            robot_observation_processor = self.robot_observation_processor
+            teleop_action_processor = self.teleop_action_processor
+            robot_action_processor = self.robot_action_processor
+
+        if not robot.is_connected or not teleop.is_connected:
+            raise RuntimeError("robot and teleop must be connected before Sync Master")
+
+        obs = robot.get_observation()
+        obs_processed = robot_observation_processor(obs)
+        act = teleop.get_action()
+        act_compat = self.compat_mapper.map_action(act)
+        act_processed_teleop = teleop_action_processor((act_compat, obs))
+        follower_target = robot_action_processor((act_processed_teleop, obs))
+        keys = sorted(
+            key
+            for key in follower_target
+            if key in obs_processed
+            and self._is_number(follower_target[key])
+            and self._is_number(obs_processed[key])
+        )
+        if not keys:
+            raise RuntimeError("Sync Master found no shared numeric follower-space action keys")
+        offsets = {key: float(obs_processed[key]) - float(follower_target[key]) for key in keys}
+        payload = {
+            "ok": True,
+            "state": "valid",
+            "teleop_mode": self.settings.teleop_mode,
+            "sample_count": 1,
+            "synced_at": now_iso(),
+            "keys": keys,
+            "offsets": offsets,
+            "follower_start": {key: float(obs_processed[key]) for key in keys},
+            "follower_target_start": {key: float(follower_target[key]) for key in keys},
+            "max_abs_offset": max(abs(value) for value in offsets.values()),
+        }
+        with self.lock:
+            self.sync_state = "valid"
+            self.latest_sync_result = payload
+            self.sync_offsets = offsets
+            self.manifest.event("info", "sync_master", "Sync Master verified", **payload)
+        return {"ok": True, "sync": payload}
 
     def dataset_status(
         self,
@@ -758,6 +819,8 @@ class WorkbenchController:
     def _disconnect_devices(self) -> None:
         self.last_effective_command = None
         self.last_effective_time_ns = None
+        self._invalidate_ready("devices disconnected")
+        self._invalidate_sync("devices disconnected")
         try:
             if self.teleop is not None:
                 self.teleop.disconnect()
@@ -935,6 +998,9 @@ class WorkbenchController:
     def _ready_required_for_recording(self) -> bool:
         return bool(self.settings.ready.get("require_ready_for_recording", False))
 
+    def _sync_required_for_recording(self) -> bool:
+        return bool(self.settings.sync.get("require_sync_for_recording", False))
+
     def _ready_settings(self) -> ReadySettings:
         path = Path(self.settings.ready.get("path", "config/ready_path.json")).expanduser()
         if not path.is_absolute():
@@ -952,6 +1018,13 @@ class WorkbenchController:
             self.manifest.event("info", "ready_invalidated", reason)
         self.ready_state = "invalid"
         self.latest_ready_result = None
+
+    def _invalidate_sync(self, reason: str) -> None:
+        if self.sync_state != "invalid":
+            self.manifest.event("info", "sync_invalidated", reason)
+        self.sync_state = "invalid"
+        self.latest_sync_result = None
+        self.sync_offsets = None
 
     def _assert_dataset_switch_allowed(self) -> None:
         if self.recording:
@@ -974,6 +1047,7 @@ class WorkbenchController:
         self.manifest = EpisodeManifest(self.session_dir)
         self.dataset_manifest = self._dataset_manifest_for(root=root, repo_id=repo_id)
         self._invalidate_ready("dataset switched")
+        self._invalidate_sync("dataset switched")
 
     def _finalize_dataset(self) -> None:
         if self.video_manager is not None:
@@ -1115,13 +1189,14 @@ class WorkbenchController:
         act_compat = self.compat_mapper.map_action(act)
         act_processed_teleop = self.teleop_action_processor((act_compat, obs))
         robot_action_to_send = self.robot_action_processor((act_processed_teleop, obs))
+        follower_target = self._apply_sync_to_follower_target(robot_action_to_send)
         now_ns = time.monotonic_ns()
         safety_result: SafetyResult | None = None
         if self.safety_processor is None:
             command = CommandFrame.absolute_passthrough(
                 master_action_raw=act,
                 master_action_processed=act_processed_teleop,
-                effective_command=robot_action_to_send,
+                effective_command=follower_target,
             )
         else:
             dt_s = (
@@ -1130,7 +1205,7 @@ class WorkbenchController:
                 else max((now_ns - self.last_effective_time_ns) / 1_000_000_000, 1e-9)
             )
             safety_result = self.safety_processor.process(
-                follower_target=robot_action_to_send,
+                follower_target=follower_target,
                 follower_qpos=obs_processed,
                 previous_effective=self.last_effective_command,
                 dt_s=dt_s,
@@ -1138,7 +1213,7 @@ class WorkbenchController:
             command = CommandFrame(
                 master_action_raw=act,
                 master_action_processed=act_processed_teleop,
-                relative_target=robot_action_to_send,
+                relative_target=follower_target,
                 safe_command=safety_result.command,
                 effective_command=safety_result.command,
                 safety_events=safety_result.events,
@@ -1202,6 +1277,27 @@ class WorkbenchController:
                 with self.dataset_lock:
                     if self.dataset is dataset:
                         dataset.add_frame(frame)
+
+    @staticmethod
+    def _is_number(value: Any) -> bool:
+        try:
+            float(value)
+        except (TypeError, ValueError):
+            return False
+        return True
+
+    def _apply_sync_to_follower_target(self, follower_target: Mapping[str, Any]) -> dict[str, Any]:
+        if self.settings.teleop_mode != RELATIVE_JOINT_MODE:
+            return dict(follower_target)
+        with self.lock:
+            offsets = dict(self.sync_offsets or {}) if self.sync_state == "valid" else None
+        if not offsets:
+            return dict(follower_target)
+        synced = dict(follower_target)
+        for key, value in follower_target.items():
+            if key in offsets and self._is_number(value):
+                synced[key] = float(value) + offsets[key]
+        return synced
 
     def _reset_episode_command_validation(self) -> None:
         self._mismatch_streak = 0

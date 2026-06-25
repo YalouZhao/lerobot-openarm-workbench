@@ -1156,7 +1156,7 @@ def test_move_to_ready_marks_ready_verified_and_allows_recording_gate(tmp_path: 
     assert controller.latest_ready_result["ok"] is True
 
 
-def test_relative_joint_mode_cannot_collect_before_phase_two(tmp_path: Path) -> None:
+def test_start_episode_requires_sync_when_configured(tmp_path: Path) -> None:
     settings = WorkbenchSettings(
         workspace_root=tmp_path,
         session_root=tmp_path / "sessions",
@@ -1178,11 +1178,162 @@ def test_relative_joint_mode_cannot_collect_before_phase_two(tmp_path: Path) -> 
         teleop={"id": "teleop", "mode": "relative_joint_offset"},
         cameras={},
         control={"default_task": "test task"},
+        sync={"require_sync_for_recording": True},
     )
-    controller = WorkbenchController(settings, session_id="relative-test")
+    controller = WorkbenchController(settings, session_id="sync-gate-test")
+    controller.ready_state = "verified"
 
-    with pytest.raises(RuntimeError, match="relative_joint_offset is not available until phase 2"):
+    with pytest.raises(RuntimeError, match="Sync Master"):
         controller.start_episode("test task")
+
+
+def test_move_to_ready_invalidates_existing_sync(tmp_path: Path, monkeypatch) -> None:
+    ready_path = tmp_path / "ready_path.json"
+    ready_path.write_text(
+        json.dumps(
+            {
+                "units": "degrees",
+                "waypoints": [
+                    {
+                        "name": "ready",
+                        "duration_s": 0.1,
+                        "action": {"left_joint_1.pos": 1.0, "right_joint_1.pos": -1.0},
+                    }
+                ],
+            }
+        )
+    )
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        ready={
+            "path": str(ready_path),
+            "fps": 4,
+            "tolerance": 0.01,
+            "settle_time_s": 0.0,
+        },
+        sync={"require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="sync-invalidated-test")
+    controller.state = "idle"
+
+    class ReadyRobot:
+        is_connected = True
+        action_features = {"left_joint_1.pos": float, "right_joint_1.pos": float}
+
+        def __init__(self) -> None:
+            self.qpos = {"left_joint_1.pos": 0.0, "right_joint_1.pos": 0.0}
+
+        def get_observation(self) -> dict[str, float]:
+            return dict(self.qpos)
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            self.qpos.update(action)
+            return dict(action)
+
+    controller.robot = ReadyRobot()
+    controller.sync_state = "valid"
+    controller.latest_sync_result = {"ok": True}
+
+    result = controller.move_to_ready(sleep=lambda _: None)
+
+    assert result["ok"] is True
+    assert controller.ready_state == "verified"
+    assert controller.sync_state == "invalid"
+    assert controller.latest_sync_result is None
+
+
+def test_relative_sync_first_command_stays_at_follower_ready_pose(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        sync={"require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="relative-sync-test")
+    dataset = FakeRecordingDataset()
+
+    class ReadyPoseRobot:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.qpos = {"left_joint_1.pos": 15.0, "right_joint_1.pos": -12.0}
+            self.sent_actions: list[dict[str, float]] = []
+
+        def get_observation(self) -> dict[str, float]:
+            return dict(self.qpos)
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            self.sent_actions.append(dict(action))
+            self.qpos.update(action)
+            return dict(action)
+
+    class OriginMasterTeleop:
+        is_connected = True
+
+        def get_action(self) -> dict[str, float]:
+            return {"left_joint_1.pos": 0.0, "right_joint_1.pos": 0.0}
+
+    robot = ReadyPoseRobot()
+    controller.robot = robot
+    controller.teleop = OriginMasterTeleop()
+    controller.dataset = dataset
+    controller.ready_state = "verified"
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: obs
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    sync_result = controller.sync_master()
+    controller.recording = True
+    controller._control_step()
+
+    assert sync_result["ok"] is True
+    assert controller.sync_state == "valid"
+    assert robot.sent_actions == [{"left_joint_1.pos": 15.0, "right_joint_1.pos": -12.0}]
+    assert dataset.frames[0]["action"] == {"left_joint_1.pos": 15.0, "right_joint_1.pos": -12.0}
 
 
 def test_dataset_action_features_are_aggregated_with_robot_action_processor(

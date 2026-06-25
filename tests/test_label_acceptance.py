@@ -51,6 +51,12 @@ def test_web_exposes_move_to_ready_control() -> None:
     assert "status.ready?.state" in INDEX_HTML
 
 
+def test_web_exposes_sync_master_control() -> None:
+    assert 'id="syncMaster"' in INDEX_HTML
+    assert '"/api/sync/master"' in INDEX_HTML
+    assert "status.sync?.state" in INDEX_HTML
+
+
 def test_dq_warning_success_label_is_saved_but_not_accepted(tmp_path: Path) -> None:
     manifest = CanonicalDatasetManifest(
         dataset_root=tmp_path / "dataset",

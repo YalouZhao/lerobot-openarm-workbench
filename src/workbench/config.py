@@ -66,6 +66,7 @@ class WorkbenchSettings:
     cameras: dict[str, dict[str, Any]]
     control: dict[str, Any]
     ready: dict[str, Any] = field(default_factory=dict)
+    sync: dict[str, Any] = field(default_factory=dict)
     safety: SafetySettings | None = None
 
     @property
@@ -141,6 +142,7 @@ def load_settings(path: str | Path) -> WorkbenchSettings:
         cameras={str(k): dict(v) for k, v in data["cameras"].items()},
         control=dict(data.get("control", {})),
         ready=dict(data.get("ready", {})),
+        sync=dict(data.get("sync", {})),
         safety=safety,
     )
 
