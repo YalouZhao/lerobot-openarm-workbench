@@ -615,12 +615,12 @@ def test_persistent_driver_mismatch_contaminates_active_episode(
         controller._control_step()
 
     assert "persistent_driver_command_mismatch" in controller.current_contamination_reasons
-    assert controller.current_command_validation == {
-        "mismatch_frames": 3,
-        "max_abs_error": pytest.approx(0.5),
-        "affected_joints": ["left_joint_1.pos"],
-        "max_consecutive_mismatch_frames": 3,
-    }
+    assert controller.current_command_validation["mismatch_frames"] == 3
+    assert controller.current_command_validation["max_abs_error"] == pytest.approx(0.5)
+    assert controller.current_command_validation["affected_joints"] == ["left_joint_1.pos"]
+    assert controller.current_command_validation["max_consecutive_mismatch_frames"] == 3
+    assert controller.current_command_validation["action_spike_frames"] == 0
+    assert controller.current_command_validation["nonfinite_action_frames"] == 0
     events = [
         json.loads(line)
         for line in (tmp_path / "sessions" / "mismatch-test" / "events.jsonl").read_text().splitlines()
@@ -909,6 +909,240 @@ def test_stop_episode_persists_safety_metadata_and_blocks_unverified_acceptance(
     assert record["dq_status"] == "fail"
     assert record["dq_reasons"] == ["safety_config_unverified"]
     assert "safety_config_unverified" in record["acceptance_reasons"]
+    assert record["accepted"] is False
+
+
+def test_stop_episode_dq_fails_when_required_camera_is_missing(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={
+            "id": "teleop",
+            "mode": "relative_joint_offset",
+            "apply_openarm_mini_compat_mapping": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": True,
+        },
+        cameras={"main": {"type": "opencv"}, "wrist_left": {"type": "opencv"}},
+        control={"camera_timeout_s": 0.1},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="dq-camera-test")
+    controller.dataset = FakeDataset()
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-26T09:00:00+08:00"
+    controller.current_frame_count = 30
+    controller.current_record_start = time.perf_counter() - 1.0
+    controller.ready_state = "verified"
+    controller.sync_state = "valid"
+    controller.frame_cache["main"]["timestamp"] = time.time()
+    controller.frame_cache["wrist_left"]["timestamp"] = None
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    labeled = controller.label_episode("success")
+
+    record = labeled["record"]
+    assert record["dq_status"] == "fail"
+    assert "camera_missing:wrist_left" in record["dq_reasons"]
+    assert record["accepted"] is False
+
+
+def test_stop_episode_dq_fails_short_and_slow_episode(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={
+            "id": "teleop",
+            "mode": "relative_joint_offset",
+            "apply_openarm_mini_compat_mapping": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": True,
+        },
+        cameras={},
+        control={"min_episode_frames": 10, "min_control_fps_ratio": 0.8},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="dq-short-slow-test")
+    controller.dataset = FakeDataset()
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-26T09:00:00+08:00"
+    controller.current_frame_count = 3
+    controller.current_record_start = time.perf_counter() - 2.0
+    controller.ready_state = "verified"
+    controller.sync_state = "valid"
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    labeled = controller.label_episode("success")
+
+    record = labeled["record"]
+    assert record["dq_status"] == "fail"
+    assert "episode_too_short:3<10" in record["dq_reasons"]
+    assert "control_fps_too_low" in record["dq_reasons"]
+    assert record["accepted"] is False
+
+
+def test_control_step_dq_tracks_action_spike_and_nonfinite_action(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={"action_spike_threshold": 5.0},
+    )
+    controller = WorkbenchController(settings, session_id="dq-action-spike-test")
+
+    class SpikeRobot:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.sent: list[dict[str, float]] = []
+
+        def get_observation(self) -> dict[str, float]:
+            return {"joint.pos": 0.0}
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            self.sent.append(dict(action))
+            return dict(action)
+
+    class SpikeTeleop:
+        is_connected = True
+        index = 0
+
+        def get_action(self) -> dict[str, float]:
+            self.index += 1
+            if self.index == 1:
+                return {"joint.pos": 0.0}
+            if self.index == 2:
+                return {"joint.pos": 20.0}
+            return {"joint.pos": float("nan")}
+
+    controller.robot = SpikeRobot()
+    controller.teleop = SpikeTeleop()
+    controller.dataset = FakeRecordingDataset()
+    controller.recording = True
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: dict(obs)
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    controller._control_step()
+    controller._control_step()
+    controller._control_step()
+
+    assert controller.current_command_validation["action_spike_frames"] == 1
+    assert controller.current_command_validation["nonfinite_action_frames"] == 1
+    assert "action_spike" in controller.current_dq_reasons
+    assert "nonfinite_action" in controller.current_dq_reasons
+
+
+def test_stop_episode_dq_fails_missing_verified_safety_metadata(tmp_path: Path) -> None:
+    incomplete_safety = make_safety_settings()
+    object.__setattr__(incomplete_safety, "verified_by", "")
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={
+            "id": "teleop",
+            "mode": "relative_joint_offset",
+            "apply_openarm_mini_compat_mapping": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": True,
+        },
+        cameras={},
+        control={},
+        safety=incomplete_safety,
+    )
+    controller = WorkbenchController(settings, session_id="dq-metadata-test")
+    controller.dataset = FakeDataset()
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-26T09:00:00+08:00"
+    controller.current_frame_count = 30
+    controller.current_record_start = time.perf_counter() - 1.0
+    controller.ready_state = "verified"
+    controller.sync_state = "valid"
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    labeled = controller.label_episode("success")
+
+    record = labeled["record"]
+    assert record["dq_status"] == "fail"
+    assert "metadata_incomplete:verified_by" in record["dq_reasons"]
     assert record["accepted"] is False
 
 

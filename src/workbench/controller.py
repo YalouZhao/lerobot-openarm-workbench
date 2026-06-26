@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from contextlib import contextmanager
@@ -304,6 +305,19 @@ class WorkbenchController:
                 safety_metadata = (
                     self.settings.safety.to_metadata() if self.settings.safety is not None else {}
                 )
+                fps = self._episode_fps(frame_count)
+                camera_labels = self._camera_health_labels()
+                hard_gate_reasons = self._episode_dq_hard_gate_reasons(
+                    frame_count=frame_count,
+                    fps=fps,
+                    cameras=camera_labels,
+                    safety_metadata=safety_metadata,
+                    contamination_reasons=contamination_reasons,
+                )
+                dq_reasons = set(contamination_reasons | self.current_dq_reasons | hard_gate_reasons)
+                dq_status = "fail" if contamination_reasons or hard_gate_reasons else (
+                    "warning" if self.current_dq_reasons else "pass"
+                )
                 record = EpisodeRecord(
                     episode_index=episode_index,
                     task=task,
@@ -313,9 +327,9 @@ class WorkbenchController:
                     started_at=started_at,
                     ended_at=now_iso(),
                     frame_count=frame_count,
-                    fps=self._episode_fps(frame_count),
+                    fps=fps,
                     save_duration_s=self.last_save_duration_s,
-                    cameras=self._camera_health_labels(),
+                    cameras=camera_labels,
                     dataset_schema_version=self.settings.dataset.dataset_schema_version,
                     action_semantics=self.settings.dataset.action_semantics,
                     teleop_mode=self.settings.teleop_mode,
@@ -356,10 +370,8 @@ class WorkbenchController:
                     ready_result=dict(self.latest_ready_result or {}),
                     auto_stopped_by_safety=auto_stopped_by_safety,
                     auto_stop_save_status="saved" if auto_stopped_by_safety else "",
-                    dq_status=(
-                        "fail" if contamination_reasons else "warning" if self.current_dq_reasons else "pass"
-                    ),
-                    dq_reasons=tuple(sorted(contamination_reasons | self.current_dq_reasons)),
+                    dq_status=dq_status,
+                    dq_reasons=tuple(sorted(dq_reasons)),
                 )
                 self.dataset_manifest.task_text = task
                 self.dataset_manifest.append_episode(record)
@@ -1304,12 +1316,16 @@ class WorkbenchController:
         follower_target = self._apply_sync_to_follower_target(robot_action_to_send)
         now_ns = time.monotonic_ns()
         safety_result: SafetyResult | None = None
+        previous_effective = self.last_effective_command
         if self.safety_processor is None:
             command = CommandFrame.absolute_passthrough(
                 master_action_raw=act,
                 master_action_processed=act_processed_teleop,
                 effective_command=follower_target,
             )
+            self._track_action_quality(command.effective_command, previous_effective)
+            self.last_effective_command = dict(command.effective_command)
+            self.last_effective_time_ns = now_ns
         else:
             dt_s = (
                 1.0 / self.settings.dataset.fps
@@ -1330,6 +1346,7 @@ class WorkbenchController:
                 effective_command=safety_result.command,
                 safety_events=safety_result.events,
             )
+            self._track_action_quality(command.effective_command, previous_effective)
             self.last_effective_command = dict(command.effective_command)
             self.last_effective_time_ns = now_ns
             self._track_follower_tracking(safety_result)
@@ -1533,6 +1550,9 @@ class WorkbenchController:
             "max_abs_error": 0.0,
             "affected_joints": [],
             "max_consecutive_mismatch_frames": 0,
+            "action_spike_frames": 0,
+            "max_action_delta": 0.0,
+            "nonfinite_action_frames": 0,
         }
 
     def _reset_episode_tracking_validation(self) -> None:
@@ -1546,6 +1566,65 @@ class WorkbenchController:
             "affected_joints": [],
             "max_consecutive_contamination_frames": 0,
         }
+
+    def _track_action_quality(
+        self,
+        effective_command: Mapping[str, Any],
+        previous_effective: Mapping[str, Any] | None,
+    ) -> None:
+        nonfinite_joints: list[str] = []
+        spike_joints: list[str] = []
+        max_delta = 0.0
+        threshold = float(self.settings.control.get("action_spike_threshold", 0.0) or 0.0)
+        for key, value in effective_command.items():
+            if not self._is_number(value):
+                nonfinite_joints.append(key)
+                continue
+            current = float(value)
+            if not math.isfinite(current):
+                nonfinite_joints.append(key)
+                continue
+            if previous_effective is None or key not in previous_effective:
+                continue
+            previous = previous_effective[key]
+            if not self._is_number(previous):
+                continue
+            previous_float = float(previous)
+            if not math.isfinite(previous_float):
+                continue
+            delta = abs(current - previous_float)
+            max_delta = max(max_delta, delta)
+            if threshold > 0.0 and delta > threshold:
+                spike_joints.append(key)
+
+        summary = self.current_command_validation
+        summary["max_action_delta"] = max(float(summary.get("max_action_delta", 0.0)), max_delta)
+        affected = set(summary.get("affected_joints", []))
+        if nonfinite_joints:
+            summary["nonfinite_action_frames"] = int(summary.get("nonfinite_action_frames", 0)) + 1
+            affected.update(nonfinite_joints)
+            self.current_dq_reasons.add("nonfinite_action")
+            self.manifest.event(
+                "error",
+                "episode_dq_fail",
+                "Non-finite effective command detected",
+                reason="nonfinite_action",
+                affected_joints=sorted(nonfinite_joints),
+            )
+        if spike_joints:
+            summary["action_spike_frames"] = int(summary.get("action_spike_frames", 0)) + 1
+            affected.update(spike_joints)
+            self.current_dq_reasons.add("action_spike")
+            self.manifest.event(
+                "error",
+                "episode_dq_fail",
+                "Effective command action spike exceeded configured threshold",
+                reason="action_spike",
+                threshold=threshold,
+                max_delta=max_delta,
+                affected_joints=sorted(spike_joints),
+            )
+        summary["affected_joints"] = sorted(affected)
 
     def _track_follower_tracking(self, result: SafetyResult) -> None:
         levels = dict(result.tracking_levels)
@@ -1691,6 +1770,66 @@ class WorkbenchController:
     def _episode_fps(self, frame_count: int) -> float:
         elapsed = max(time.perf_counter() - self.current_record_start, 1e-6)
         return round(frame_count / elapsed, 2)
+
+    def _episode_dq_hard_gate_reasons(
+        self,
+        *,
+        frame_count: int,
+        fps: float,
+        cameras: Mapping[str, str],
+        safety_metadata: Mapping[str, Any],
+        contamination_reasons: set[str],
+    ) -> set[str]:
+        reasons: set[str] = set()
+        min_frames = int(self.settings.control.get("min_episode_frames", 1) or 1)
+        if frame_count < min_frames:
+            reasons.add(f"episode_too_short:{frame_count}<{min_frames}")
+
+        min_fps_ratio = float(self.settings.control.get("min_control_fps_ratio", 0.0) or 0.0)
+        if min_fps_ratio > 0.0:
+            min_fps = float(self.settings.dataset.fps) * min_fps_ratio
+            if fps < min_fps:
+                reasons.add("control_fps_too_low")
+
+        for camera_name in self.settings.cameras:
+            if cameras.get(camera_name) != "ok":
+                reasons.add(f"camera_missing:{camera_name}")
+
+        command_validation = self.current_command_validation
+        if int(command_validation.get("action_spike_frames", 0) or 0) > 0:
+            reasons.add("action_spike")
+        if int(command_validation.get("nonfinite_action_frames", 0) or 0) > 0:
+            reasons.add("nonfinite_action")
+
+        if self.settings.safety is not None:
+            required_metadata = {
+                "safety_config_version": safety_metadata.get("safety_config_version"),
+                "hard_limits": safety_metadata.get("hard_limits"),
+                "soft_limits": safety_metadata.get("soft_limits"),
+                "max_step": safety_metadata.get("max_step"),
+                "velocity_limit": safety_metadata.get("velocity_limit"),
+            }
+            if bool(safety_metadata.get("safety_config_verified", False)):
+                required_metadata.update(
+                    {
+                        "verified_by": safety_metadata.get("verified_by"),
+                        "verified_at": safety_metadata.get("verified_at"),
+                        "verification_basis": safety_metadata.get("verification_basis"),
+                    }
+                )
+            for key, value in required_metadata.items():
+                if value is None or value == "" or value == () or value == [] or value == {}:
+                    reasons.add(f"metadata_incomplete:{key}")
+
+        if reasons:
+            self.manifest.event(
+                "error",
+                "episode_dq_fail",
+                "Episode failed data-quality hard gates",
+                reasons=sorted(reasons),
+                contamination_reasons=sorted(contamination_reasons),
+            )
+        return reasons
 
     def _camera_health_labels(self) -> dict[str, str]:
         now = time.time()

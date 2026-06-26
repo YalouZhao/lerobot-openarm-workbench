@@ -343,7 +343,10 @@
     "connect_retries": 5,
     "connect_retry_delay_s": 1.5,
     "auto_reconnect_when_idle": true,
-    "reconnect_cooldown_s": 5.0
+    "reconnect_cooldown_s": 5.0,
+    "min_episode_frames": 10,
+    "min_control_fps_ratio": 0.5,
+    "action_spike_threshold": 8.0
   },
   "ready": {
     "path": "config/ready_path.json",

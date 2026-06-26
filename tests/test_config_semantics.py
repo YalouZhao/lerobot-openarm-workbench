@@ -53,7 +53,11 @@ def config_payload() -> dict:
             "compat_mapping_verified": False,
         },
         "cameras": {},
-        "control": {},
+        "control": {
+            "min_episode_frames": 10,
+            "min_control_fps_ratio": 0.5,
+            "action_spike_threshold": 8.0,
+        },
         "ready": {
             "path": "config/ready_path.json",
             "fps": 30,
@@ -90,6 +94,9 @@ def test_loads_explicit_v2_semantics(tmp_path: Path) -> None:
     assert settings.safety.safety_config_version == "test_safety_v1"
     assert settings.safety.safety_config_verified is False
     assert settings.safety.joints["left_gripper.pos"].hard_limit == (-65.0, 0.0)
+    assert settings.control["min_episode_frames"] == 10
+    assert settings.control["min_control_fps_ratio"] == 0.5
+    assert settings.control["action_spike_threshold"] == 8.0
     assert settings.ready["path"] == "config/ready_path.json"
     assert settings.sync["samples"] == 3
     assert settings.sync["sample_interval_s"] == 0.02
@@ -171,6 +178,9 @@ def test_example_config_declares_v2_semantics() -> None:
     assert payload["safety"]["safety_config_verified"] is True
     assert payload["safety"]["verified_by"] == "hardware_operator"
     assert "driver_mismatch=0" in payload["safety"]["verification_basis"]
+    assert payload["control"]["min_episode_frames"] == 10
+    assert payload["control"]["min_control_fps_ratio"] == 0.5
+    assert payload["control"]["action_spike_threshold"] == 8.0
     assert payload["ready"]["path"] == "config/ready_path.json"
     assert payload["ready"]["require_ready_for_recording"] is False
     assert payload["sync"]["samples"] == 3
