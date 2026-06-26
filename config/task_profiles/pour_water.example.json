@@ -1,0 +1,18 @@
+{
+  "profile_name": "pour_water",
+  "task_prompt": "From the robot's perspective, use the right robotic arm to grasp and lift the tall water bottle from the right-side coaster. Then use the left robotic arm to grasp and lift the short water cup from the other coaster. Move the bottle held by the right arm above the cup held by the left arm. Keep the cup stable and upright with the left arm, then tilt the bottle with the right arm to pour water into the cup without spilling. After pouring, return the bottle to an upright position. Finally, use both robotic arms to place the water bottle and the water cup back onto their respective coasters.",
+  "ready_path": "config/ready_path.json",
+  "dataset": {
+    "root": "/tmp/lerobot-phase1-hardware-v2-verified/pour_water_dataset",
+    "repo_id": "local/pour_water_collection",
+    "session_root": "/tmp/lerobot-phase1-hardware-v2-verified/pour_water_sessions"
+  },
+  "teleop_mode": "relative_joint_offset",
+  "safety_config_version": "openarm_follower_safety_v2",
+  "dq": {
+    "min_episode_frames": 10,
+    "min_control_fps_ratio": 0.5,
+    "action_spike_threshold": 8.0
+  },
+  "sop": "Move the bottle and cup to their marked coasters, run Move to Ready, verify sync, then record."
+}

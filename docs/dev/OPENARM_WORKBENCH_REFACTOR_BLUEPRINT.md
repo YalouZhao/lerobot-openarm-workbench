@@ -831,10 +831,100 @@ The test suite must prove:
 13. UI controls exist for output root, output repo id, dry-run, export start, and export status;
 14. export buttons are disabled when recording or safety frozen.
 
-### 16.5 Follow-up priorities
+### 16.5 Priority 2: Collection batch QA report
 
-After priority 1 is accepted, implement in order:
+Create:
 
-1. collection batch QA report;
-2. task profile management;
-3. Safety Frozen UX completion.
+- `src/workbench/collection_report.py`: pure collection QA aggregation. It reads dataset manifest and episode metadata without modifying the source dataset, aggregates acceptance/exportability, DQ, contamination, command-quality, tracking, and timing summaries, and renders JSON plus Markdown reports.
+- `scripts/report_collection_batch.py`: CLI wrapper for generating `collection_report.json` and `collection_report.md`.
+- `tests/test_collection_report.py`: test-first coverage for mixed labels, DQ-fail reasons, contamination reasons, exportable counts, missing timing sidecars, Markdown rendering, JSON parseability, and CLI behavior.
+
+Required command:
+
+```bash
+python scripts/report_collection_batch.py \
+  --root /path/to/collection_dataset \
+  --repo-id local/collection_dataset \
+  --output /path/to/report_dir
+```
+
+Required outputs:
+
+- `collection_report.json`
+- `collection_report.md`
+
+The report must include:
+
+1. dataset root, repo id, schema/action semantics, safety config, and compatibility mapping;
+2. episode/frame counts, label counts, accepted count, DQ pass/fail count, contaminated count, and exportable count;
+3. DQ reason counts including camera, too-short, FPS, action spike, non-finite action, safety metadata, driver mismatch, tracking warning/freeze, and relative resync reasons when present;
+4. contamination reason counts;
+5. command-quality totals for action spike, driver mismatch, and non-finite action frames;
+6. tracking warning/freeze frame totals;
+7. timing summary for mean/min control FPS, maximum control-step duration, mean action-send latency, and missing timing sidecar count;
+8. per-episode details including episode index, label, accepted, DQ status, contamination, frame count, duration, FPS, action spike frames, driver mismatch count, and timing sidecar status.
+
+The report is read-only QA evidence. It does not rewrite labels, acceptance, DQ results, source dataset files, or exported training packages.
+
+### 16.6 Priority 2 automated acceptance
+
+The test suite must prove:
+
+1. mixed success/failure/discard episodes aggregate correctly;
+2. DQ-fail reasons aggregate correctly;
+3. contamination reasons aggregate correctly;
+4. accepted/exportable counts follow the production export gate;
+5. Markdown output is human-readable and includes key counts/reasons;
+6. JSON output is parseable;
+7. missing timing sidecars are reported but do not crash report generation;
+8. the CLI writes both required output files.
+
+### 16.7 Follow-up priorities
+
+After priority 2 is accepted, implement in order:
+
+1. task profile management;
+2. Safety Frozen UX completion.
+
+### 16.8 Priority 3: Task profile management
+
+Create or modify:
+
+- `src/workbench/config.py`: load an optional task profile and merge file-level task settings into the runtime settings before semantic validation.
+- `scripts/start_workbench.py`: accept `--task-profile /path/to/profile.json`.
+- `config/task_profiles/*.example.json`: example task profiles that can be copied for each production task.
+- `tests/test_config_semantics.py`: test profile overrides and safety-version mismatch rejection.
+
+Minimal profile fields:
+
+```json
+{
+  "profile_name": "pour_water",
+  "task_prompt": "...",
+  "ready_path": "config/ready_path.json",
+  "dataset": {
+    "root": "/tmp/.../dataset",
+    "repo_id": "local/task_collection",
+    "session_root": "/tmp/.../sessions"
+  },
+  "teleop_mode": "relative_joint_offset",
+  "safety_config_version": "openarm_follower_safety_v2",
+  "dq": {
+    "min_episode_frames": 10,
+    "min_control_fps_ratio": 0.5,
+    "action_spike_threshold": 8.0
+  },
+  "sop": "..."
+}
+```
+
+Required behavior:
+
+1. `task_prompt` becomes `control.default_task` and is written to episode metadata through the existing task path.
+2. `ready_path` becomes the Move to Ready path.
+3. dataset root, repo id, and session root are taken from the profile.
+4. `teleop_mode` is validated by the existing semantic configuration gate.
+5. profile `safety_config_version` must match the loaded runtime safety configuration.
+6. DQ values override the base config control DQ thresholds.
+7. task profile name/path/SOP are visible in status for operator verification.
+8. This priority remains file-level management; full UI profile switching is out of scope.

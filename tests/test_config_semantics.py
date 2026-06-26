@@ -189,3 +189,63 @@ def test_example_config_declares_v2_semantics() -> None:
     assert payload["safety"]["tracking_error_persistence_frames"] == 3
     assert payload["safety"]["joints"]["left_joint_2.pos"]["hard_limit"] == [-90.0, 9.0]
     assert payload["safety"]["joints"]["right_joint_2.pos"]["hard_limit"] == [-9.0, 90.0]
+
+
+def write_task_profile(tmp_path: Path, payload: dict) -> Path:
+    path = tmp_path / "task_profile.json"
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def test_task_profile_overrides_collection_task_paths_and_dq(tmp_path: Path) -> None:
+    config = write_config(tmp_path, config_payload())
+    profile = write_task_profile(
+        tmp_path,
+        {
+            "profile_name": "pour_water",
+            "task_prompt": "Pour water into the cup.",
+            "ready_path": str(tmp_path / "ready_pour.json"),
+            "dataset": {
+                "root": str(tmp_path / "datasets" / "pour_water"),
+                "repo_id": "local/pour_water",
+                "session_root": str(tmp_path / "sessions" / "pour_water"),
+            },
+            "teleop_mode": "relative_joint_offset",
+            "safety_config_version": "test_safety_v1",
+            "dq": {
+                "min_episode_frames": 20,
+                "min_control_fps_ratio": 0.75,
+                "action_spike_threshold": 4.5,
+            },
+            "sop": "Move props to marked coasters before recording.",
+        },
+    )
+
+    settings = load_settings(config, task_profile=profile)
+
+    assert settings.control["default_task"] == "Pour water into the cup."
+    assert settings.control["task_profile_name"] == "pour_water"
+    assert settings.control["task_profile_path"] == str(profile)
+    assert settings.control["task_profile_sop"] == "Move props to marked coasters before recording."
+    assert settings.ready["path"] == str(tmp_path / "ready_pour.json")
+    assert settings.dataset.root == tmp_path / "datasets" / "pour_water"
+    assert settings.dataset.repo_id == "local/pour_water"
+    assert settings.session_root == tmp_path / "sessions" / "pour_water"
+    assert settings.teleop["mode"] == "relative_joint_offset"
+    assert settings.control["min_episode_frames"] == 20
+    assert settings.control["min_control_fps_ratio"] == 0.75
+    assert settings.control["action_spike_threshold"] == 4.5
+
+
+def test_task_profile_rejects_safety_config_mismatch(tmp_path: Path) -> None:
+    config = write_config(tmp_path, config_payload())
+    profile = write_task_profile(
+        tmp_path,
+        {
+            "task_prompt": "Different task.",
+            "safety_config_version": "other_safety",
+        },
+    )
+
+    with pytest.raises(ValueError, match="task profile safety_config_version mismatch"):
+        load_settings(config, task_profile=profile)

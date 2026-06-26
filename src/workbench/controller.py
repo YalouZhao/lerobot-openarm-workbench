@@ -568,6 +568,9 @@ class WorkbenchController:
                 "cameras": cameras,
                 "control": {
                     "default_task": str(self.settings.control.get("default_task", "")),
+                    "task_profile_name": self.settings.control.get("task_profile_name"),
+                    "task_profile_path": self.settings.control.get("task_profile_path"),
+                    "task_profile_sop": self.settings.control.get("task_profile_sop"),
                     "teleop_when_idle": self.teleop_when_idle,
                     "dry_teleop_enabled": self.dry_teleop_enabled,
                     "has_realsense": "realsense" in self.settings.cameras,

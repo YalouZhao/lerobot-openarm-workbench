@@ -86,9 +86,11 @@ class WorkbenchSettings:
         return bool(self.teleop.get("compat_mapping_verified", True))
 
 
-def load_settings(path: str | Path) -> WorkbenchSettings:
+def load_settings(path: str | Path, *, task_profile: str | Path | None = None) -> WorkbenchSettings:
     config_path = Path(path).expanduser()
     data = json.loads(config_path.read_text())
+    if task_profile is not None:
+        _apply_task_profile(data, Path(task_profile).expanduser())
     dataset = data["dataset"]
     teleop = dict(data["teleop"])
     if "safety" not in data:
@@ -149,3 +151,56 @@ def load_settings(path: str | Path) -> WorkbenchSettings:
 
 def default_config_path() -> Path:
     return Path.home() / "lerobot_workbench" / "config" / "workbench_config.json"
+
+
+def _apply_task_profile(config: dict[str, Any], profile_path: Path) -> None:
+    profile = json.loads(profile_path.read_text())
+    profile_name = str(profile.get("profile_name") or profile_path.stem)
+    profile_safety_version = _profile_safety_config_version(profile)
+    runtime_safety_version = str(config.get("safety", {}).get("safety_config_version", ""))
+    if profile_safety_version and profile_safety_version != runtime_safety_version:
+        raise ValueError(
+            "task profile safety_config_version mismatch: "
+            f"expected {runtime_safety_version!r}, got {profile_safety_version!r}"
+        )
+
+    control = config.setdefault("control", {})
+    if "task_prompt" in profile:
+        control["default_task"] = str(profile["task_prompt"])
+    control["task_profile_name"] = profile_name
+    control["task_profile_path"] = str(profile_path)
+    if "sop" in profile:
+        control["task_profile_sop"] = str(profile["sop"])
+
+    if "ready_path" in profile:
+        config.setdefault("ready", {})["path"] = str(profile["ready_path"])
+
+    dataset_profile = profile.get("dataset")
+    if isinstance(dataset_profile, dict):
+        dataset = config.setdefault("dataset", {})
+        if "root" in dataset_profile:
+            dataset["root"] = str(dataset_profile["root"])
+        if "repo_id" in dataset_profile:
+            dataset["repo_id"] = str(dataset_profile["repo_id"])
+        if "session_root" in dataset_profile:
+            config["session_root"] = str(dataset_profile["session_root"])
+
+    if "teleop_mode" in profile:
+        config.setdefault("teleop", {})["mode"] = str(profile["teleop_mode"])
+
+    dq = profile.get("dq")
+    if isinstance(dq, dict):
+        control.update(dq)
+
+    cameras = profile.get("cameras")
+    if isinstance(cameras, dict):
+        config["cameras"] = cameras
+
+
+def _profile_safety_config_version(profile: dict[str, Any]) -> str:
+    if "safety_config_version" in profile:
+        return str(profile["safety_config_version"])
+    safety = profile.get("safety")
+    if isinstance(safety, dict) and "safety_config_version" in safety:
+        return str(safety["safety_config_version"])
+    return ""
