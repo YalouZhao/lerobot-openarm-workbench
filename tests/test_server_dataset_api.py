@@ -109,8 +109,8 @@ class FakeController:
         self.calls.append(("move_to_ready", None))
         return {"ok": True, "ready": {"ok": True, "max_abs_error": 0.0}}
 
-    def sync_master(self) -> dict:
-        self.calls.append(("sync_master", None))
+    def sync_master(self, arm: str = "both") -> dict:
+        self.calls.append(("sync_master", {"arm": arm}))
         return {"ok": True, "sync": {"state": "valid", "sample_count": 1}}
 
     def enable_teleop(self) -> dict:
@@ -165,7 +165,7 @@ def test_dataset_lifecycle_routes_call_controller() -> None:
         assert switched["dataset"]["root"] == "/tmp/other"
         ready = post_json(base, "/api/ready/move", {})
         assert ready["ready"]["ok"] is True
-        sync = post_json(base, "/api/sync/master", {})
+        sync = post_json(base, "/api/sync/master", {"arm": "left"})
         assert sync["sync"]["state"] == "valid"
         enabled = post_json(base, "/api/teleop/enable", {})
         assert enabled["teleop"]["enabled"] is True
@@ -178,7 +178,7 @@ def test_dataset_lifecycle_routes_call_controller() -> None:
                 {"root": "/tmp/other", "repo_id": "local/other", "session_root": "/tmp/other-sessions"},
             ),
             ("move_to_ready", None),
-            ("sync_master", None),
+            ("sync_master", {"arm": "left"}),
             ("enable_teleop", None),
             ("disable_teleop", None),
         ]

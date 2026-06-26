@@ -1538,6 +1538,182 @@ def test_sync_master_uses_configured_multi_sample_median(tmp_path: Path) -> None
     assert controller.sync_offsets == sync["offsets"]
 
 
+def test_sync_master_can_sync_left_and_right_arms_independently(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        sync={"samples": 1, "require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="independent-sync-test")
+
+    class TwoArmRobot:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.qpos = {"left_joint_1.pos": 10.0, "right_joint_1.pos": -20.0}
+
+        def get_observation(self) -> dict[str, float]:
+            return dict(self.qpos)
+
+    class TwoArmTeleop:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.action = {"left_joint_1.pos": 1.0, "right_joint_1.pos": -2.0}
+
+        def get_action(self) -> dict[str, float]:
+            return dict(self.action)
+
+    robot = TwoArmRobot()
+    teleop = TwoArmTeleop()
+    controller.robot = robot
+    controller.teleop = teleop
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: dict(obs)
+
+    left = controller.sync_master(arm="left")["sync"]
+
+    assert left["arm"] == "left"
+    assert left["synced_arms"] == ["left"]
+    assert left["state"] == "partial"
+    assert controller.sync_state == "partial"
+    assert controller.sync_offsets == {"left_joint_1.pos": 9.0}
+
+    robot.qpos = {"left_joint_1.pos": 100.0, "right_joint_1.pos": -30.0}
+    teleop.action = {"left_joint_1.pos": 100.0, "right_joint_1.pos": -3.0}
+    right = controller.sync_master(arm="right")["sync"]
+
+    assert right["arm"] == "right"
+    assert right["synced_arms"] == ["left", "right"]
+    assert right["state"] == "valid"
+    assert controller.sync_state == "valid"
+    assert controller.sync_offsets == {"left_joint_1.pos": 9.0, "right_joint_1.pos": -27.0}
+
+
+def test_relative_sync_applies_per_joint_gain_and_deadband(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        sync={
+            "samples": 1,
+            "require_sync_for_recording": True,
+            "gains": {"left_joint_1.pos": 2.0, "right_joint_1.pos": 0.5},
+            "deadband": {"left_joint_1.pos": 0.2, "right_joint_1.pos": 0.2},
+        },
+    )
+    controller = WorkbenchController(settings, session_id="relative-gain-deadband-test")
+    controller.sync_state = "valid"
+    controller.sync_arms = {"left", "right"}
+    controller.sync_offsets = {"left_joint_1.pos": 9.0, "right_joint_1.pos": -18.0}
+    controller.sync_calibration = {
+        "follower_start": {"left_joint_1.pos": 10.0, "right_joint_1.pos": -20.0},
+        "follower_target_start": {"left_joint_1.pos": 1.0, "right_joint_1.pos": -2.0},
+    }
+
+    synced = controller._apply_sync_to_follower_target(
+        {"left_joint_1.pos": 1.1, "right_joint_1.pos": 0.0}
+    )
+
+    assert synced == {"left_joint_1.pos": 10.0, "right_joint_1.pos": -19.0}
+    assert controller.latest_relative_result == {
+        "left_joint_1.pos": {
+            "raw_target": 1.1,
+            "target_start": 1.0,
+            "follower_start": 10.0,
+            "delta": 0.0,
+            "gain": 2.0,
+            "deadband": 0.2,
+            "command": 10.0,
+        },
+        "right_joint_1.pos": {
+            "raw_target": 0.0,
+            "target_start": -2.0,
+            "follower_start": -20.0,
+            "delta": 2.0,
+            "gain": 0.5,
+            "deadband": 0.2,
+            "command": -19.0,
+        },
+    }
+
+
+def test_sync_master_during_recording_contaminates_episode(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        sync={"require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="resync-contaminates-test")
+    controller.recording = True
+    controller.current_episode_index = 3
+
+    with pytest.raises(RuntimeError, match="cannot Sync Master while recording"):
+        controller.sync_master()
+
+    assert "relative_resync_during_recording" in controller.current_contamination_reasons
+    events = [json.loads(line) for line in controller.manifest.events_path.read_text().splitlines()]
+    assert any(
+        event["event"] == "episode_contaminated"
+        and event["reason"] == "relative_resync_during_recording"
+        for event in events
+    )
+
+
 def test_enable_dry_teleop_requires_ready_and_sync_then_sends_without_recording(
     tmp_path: Path,
     monkeypatch,

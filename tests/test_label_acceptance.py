@@ -53,7 +53,11 @@ def test_web_exposes_move_to_ready_control() -> None:
 
 def test_web_exposes_sync_master_control() -> None:
     assert 'id="syncMaster"' in INDEX_HTML
+    assert 'id="syncLeft"' in INDEX_HTML
+    assert 'id="syncRight"' in INDEX_HTML
     assert '"/api/sync/master"' in INDEX_HTML
+    assert 'arm: "left"' in INDEX_HTML
+    assert 'arm: "right"' in INDEX_HTML
     assert "status.sync?.state" in INDEX_HTML
 
 

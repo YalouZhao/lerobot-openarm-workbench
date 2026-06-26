@@ -193,6 +193,8 @@ INDEX_HTML = """<!doctype html>
         <button id="resetRs">重置 RealSense</button>
         <button id="moveReady">Move to Ready</button>
         <button id="syncMaster">Sync Master</button>
+        <button id="syncLeft">Sync Left</button>
+        <button id="syncRight">Sync Right</button>
         <button id="enableTeleop">Enable Teleop</button>
         <button id="disableTeleop">Disable Teleop</button>
       </div>
@@ -314,6 +316,8 @@ INDEX_HTML = """<!doctype html>
       $("resetRs").disabled = state === "recording" || !status.control.has_realsense;
       $("moveReady").disabled = state === "recording" || state === "moving_ready" || status.control.dry_teleop_enabled || frozen;
       $("syncMaster").disabled = state === "recording" || state === "moving_ready" || frozen;
+      $("syncLeft").disabled = state === "recording" || state === "moving_ready" || frozen;
+      $("syncRight").disabled = state === "recording" || state === "moving_ready" || frozen;
       $("enableTeleop").disabled = state === "recording" || state === "moving_ready" || status.control.dry_teleop_enabled || frozen;
       $("disableTeleop").disabled = state === "recording" || !status.control.dry_teleop_enabled;
       $("newDataset").disabled = state === "recording" || frozen;
@@ -372,7 +376,7 @@ INDEX_HTML = """<!doctype html>
           ["已保存", status.episode.last_saved_episode_index ?? "--"],
           ["保存耗时", status.episode.save_duration_s == null ? "--" : `${status.episode.save_duration_s}s`],
           ["Ready", `${status.ready?.state || "unknown"}${status.ready?.required_for_recording ? " / required" : ""}`],
-          ["Sync", `${status.sync?.state || "unknown"}${status.sync?.required_for_recording ? " / required" : ""}`],
+          ["Sync", `${status.sync?.state || "unknown"}${status.sync?.required_for_recording ? " / required" : ""}${status.sync?.latest_result?.synced_arms ? " / " + status.sync.latest_result.synced_arms.join("+") : ""}`],
           ["Dry Teleop", status.control.dry_teleop_enabled ? "enabled" : "disabled"],
           ["Freeze", status.control.safety_frozen ? `${status.control.freeze_reason || "frozen"} / ${status.episode.auto_stop_save_status || "--"}` : "no"],
           ["状态消息", status.message || ""]
@@ -412,8 +416,16 @@ INDEX_HTML = """<!doctype html>
       catch (err) { log(`Move to Ready 失败：${err.message}`); }
     };
     $("syncMaster").onclick = async () => {
-      try { const data = await api("/api/sync/master", {}); const sync = data.sync || {}; log(`Sync Master：${sync.state || "unknown"}，keys=${(sync.keys || []).length}`); refresh(); }
+      try { const data = await api("/api/sync/master", {arm: "both"}); const sync = data.sync || {}; log(`Sync Master：${sync.state || "unknown"}，arms=${(sync.synced_arms || []).join("+") || "--"}，keys=${(sync.keys || []).length}`); refresh(); }
       catch (err) { log(`Sync Master 失败：${err.message}`); }
+    };
+    $("syncLeft").onclick = async () => {
+      try { const data = await api("/api/sync/master", {arm: "left"}); const sync = data.sync || {}; log(`Sync Left：${sync.state || "unknown"}，arms=${(sync.synced_arms || []).join("+") || "--"}，keys=${(sync.keys || []).length}`); refresh(); }
+      catch (err) { log(`Sync Left 失败：${err.message}`); }
+    };
+    $("syncRight").onclick = async () => {
+      try { const data = await api("/api/sync/master", {arm: "right"}); const sync = data.sync || {}; log(`Sync Right：${sync.state || "unknown"}，arms=${(sync.synced_arms || []).join("+") || "--"}，keys=${(sync.keys || []).length}`); refresh(); }
+      catch (err) { log(`Sync Right 失败：${err.message}`); }
     };
     $("enableTeleop").onclick = async () => {
       try { await api("/api/teleop/enable", {}); log("Dry teleop 已启用，可小幅检查方向，不会写入数据"); refresh(); }

@@ -162,6 +162,9 @@ class WorkbenchController:
         self.sync_state = "invalid"
         self.latest_sync_result: dict[str, Any] | None = None
         self.sync_offsets: dict[str, float] | None = None
+        self.sync_arms: set[str] = set()
+        self.sync_calibration: dict[str, dict[str, float]] | None = None
+        self.latest_relative_result: dict[str, dict[str, float]] | None = None
         self.freeze_reason = ""
         self.freeze_message = ""
         self.auto_stopped_by_safety = False
@@ -540,6 +543,7 @@ class WorkbenchController:
                     "state": self.sync_state,
                     "required_for_recording": self._sync_required_for_recording(),
                     "latest_result": self.latest_sync_result,
+                    "latest_relative_result": self.latest_relative_result,
                 },
             }
 
@@ -584,9 +588,20 @@ class WorkbenchController:
             )
         return {"ok": result.ok, "ready": payload}
 
-    def sync_master(self) -> dict[str, Any]:
+    def sync_master(self, arm: str = "both") -> dict[str, Any]:
+        arm = self._normalize_sync_arm(arm)
         with self.lock:
             if self.recording:
+                reason = "relative_resync_during_recording"
+                self.current_contamination_reasons.add(reason)
+                self.current_dq_reasons.add(reason)
+                self.manifest.event(
+                    "warning",
+                    "episode_contaminated",
+                    "Sync Master requested while recording; active episode contaminated",
+                    episode_index=self.current_episode_index,
+                    reason=reason,
+                )
                 raise RuntimeError("cannot Sync Master while recording")
             if self.robot is None:
                 raise RuntimeError("robot is not connected")
@@ -619,7 +634,8 @@ class WorkbenchController:
         keys = sorted(
             key
             for key in target_samples[0]
-            if all(
+            if self._sync_key_matches_arm(key, arm)
+            and all(
                 key in obs_sample
                 and key in target_sample
                 and self._is_number(obs_sample[key])
@@ -628,7 +644,7 @@ class WorkbenchController:
             )
         )
         if not keys:
-            raise RuntimeError("Sync Master found no shared numeric follower-space action keys")
+            raise RuntimeError(f"Sync Master found no shared numeric {arm} follower-space action keys")
         follower_start = {
             key: float(np.median([float(sample[key]) for sample in obs_samples])) for key in keys
         }
@@ -636,10 +652,13 @@ class WorkbenchController:
             key: float(np.median([float(sample[key]) for sample in target_samples])) for key in keys
         }
         offsets = {key: follower_start[key] - follower_target_start[key] for key in keys}
+        synced_arms = self._arms_for_keys(keys)
+        required_arms = self._required_sync_arms()
         payload = {
             "ok": True,
             "state": "valid",
             "teleop_mode": self.settings.teleop_mode,
+            "arm": arm,
             "sample_count": sample_count,
             "synced_at": now_iso(),
             "keys": keys,
@@ -649,9 +668,28 @@ class WorkbenchController:
             "max_abs_offset": max(abs(value) for value in offsets.values()),
         }
         with self.lock:
-            self.sync_state = "valid"
+            merged_offsets = dict(self.sync_offsets or {})
+            merged_offsets.update(offsets)
+            calibration = {
+                "follower_start": dict((self.sync_calibration or {}).get("follower_start", {})),
+                "follower_target_start": dict(
+                    (self.sync_calibration or {}).get("follower_target_start", {})
+                ),
+            }
+            calibration["follower_start"].update(follower_start)
+            calibration["follower_target_start"].update(follower_target_start)
+            if arm == "both":
+                self.sync_arms = synced_arms
+            else:
+                self.sync_arms.update(synced_arms)
+            state = "valid" if required_arms.issubset(self.sync_arms) else "partial"
+            payload["state"] = state
+            payload["synced_arms"] = sorted(self.sync_arms)
+            payload["required_arms"] = sorted(required_arms)
+            self.sync_state = state
             self.latest_sync_result = payload
-            self.sync_offsets = offsets
+            self.sync_offsets = merged_offsets
+            self.sync_calibration = calibration
             self.manifest.event("info", "sync_master", "Sync Master verified", **payload)
         return {"ok": True, "sync": payload}
 
@@ -1091,6 +1129,9 @@ class WorkbenchController:
         self.sync_state = "invalid"
         self.latest_sync_result = None
         self.sync_offsets = None
+        self.sync_arms = set()
+        self.sync_calibration = None
+        self.latest_relative_result = None
         self.dry_teleop_enabled = False
 
     def _assert_dataset_switch_allowed(self) -> None:
@@ -1395,13 +1436,95 @@ class WorkbenchController:
             return dict(follower_target)
         with self.lock:
             offsets = dict(self.sync_offsets or {}) if self.sync_state == "valid" else None
+            calibration = dict(self.sync_calibration or {}) if self.sync_state == "valid" else None
         if not offsets:
             return dict(follower_target)
         synced = dict(follower_target)
+        diagnostics: dict[str, dict[str, float]] = {}
+        follower_start = dict((calibration or {}).get("follower_start", {}))
+        follower_target_start = dict((calibration or {}).get("follower_target_start", {}))
         for key, value in follower_target.items():
             if key in offsets and self._is_number(value):
-                synced[key] = float(value) + offsets[key]
+                raw_target = float(value)
+                if key in follower_start and key in follower_target_start:
+                    base = float(follower_start[key])
+                    target_base = float(follower_target_start[key])
+                    delta = raw_target - target_base
+                    deadband = self._relative_deadband_for_key(key)
+                    if abs(delta) < deadband:
+                        delta = 0.0
+                    gain = self._relative_gain_for_key(key)
+                    command = base + gain * delta
+                    synced[key] = command
+                    diagnostics[key] = {
+                        "raw_target": raw_target,
+                        "target_start": target_base,
+                        "follower_start": base,
+                        "delta": delta,
+                        "gain": gain,
+                        "deadband": deadband,
+                        "command": command,
+                    }
+                else:
+                    command = raw_target + offsets[key]
+                    synced[key] = command
+                    diagnostics[key] = {
+                        "raw_target": raw_target,
+                        "target_start": raw_target,
+                        "follower_start": command,
+                        "delta": 0.0,
+                        "gain": 1.0,
+                        "deadband": 0.0,
+                        "command": command,
+                    }
+        with self.lock:
+            self.latest_relative_result = diagnostics
         return synced
+
+    @staticmethod
+    def _normalize_sync_arm(arm: str | None) -> str:
+        normalized = str(arm or "both").strip().lower()
+        aliases = {"all": "both", "dual": "both", "both_arms": "both"}
+        normalized = aliases.get(normalized, normalized)
+        if normalized not in {"left", "right", "both"}:
+            raise ValueError("sync arm must be left, right, or both")
+        return normalized
+
+    @staticmethod
+    def _sync_key_matches_arm(key: str, arm: str) -> bool:
+        if arm == "both":
+            return True
+        return key.startswith(f"{arm}_")
+
+    @staticmethod
+    def _arms_for_keys(keys: list[str]) -> set[str]:
+        arms = {key.split("_", 1)[0] for key in keys if key.startswith(("left_", "right_"))}
+        return arms or {"both"}
+
+    def _required_sync_arms(self) -> set[str]:
+        configured = self.settings.sync.get("required_arms")
+        if configured is None:
+            return {"left", "right"}
+        if isinstance(configured, str):
+            configured = [configured]
+        arms = {self._normalize_sync_arm(str(arm)) for arm in configured}
+        if "both" in arms:
+            return {"left", "right"}
+        return arms or {"left", "right"}
+
+    def _relative_gain_for_key(self, key: str) -> float:
+        gains = self.settings.sync.get("gains", {})
+        if isinstance(gains, Mapping) and key in gains:
+            return float(gains[key])
+        return float(self.settings.sync.get("gain", 1.0))
+
+    def _relative_deadband_for_key(self, key: str) -> float:
+        deadband = self.settings.sync.get("deadband", {})
+        if isinstance(deadband, Mapping) and key in deadband:
+            return max(0.0, float(deadband[key]))
+        if isinstance(deadband, (int, float, str)):
+            return max(0.0, float(deadband))
+        return 0.0
 
     def _reset_episode_command_validation(self) -> None:
         self._mismatch_streak = 0

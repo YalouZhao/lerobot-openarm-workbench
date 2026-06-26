@@ -68,7 +68,7 @@ def make_handler(controller: WorkbenchController):
                     self._send_json(controller.move_to_ready())
                     return
                 if parsed.path == "/api/sync/master":
-                    self._send_json(controller.sync_master())
+                    self._send_json(controller.sync_master(arm=str(body.get("arm", "both"))))
                     return
                 if parsed.path == "/api/teleop/enable":
                     self._send_json(controller.enable_teleop())
