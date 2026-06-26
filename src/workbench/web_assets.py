@@ -324,6 +324,8 @@ INDEX_HTML = """<!doctype html>
       const frozen = status.control.safety_frozen;
       $("start").disabled = state === "recording" || readyBlocked || syncBlocked || frozen;
       $("stop").disabled = state !== "recording";
+      $("stop").textContent = frozen && state !== "recording" ? "已自动停止" : "停止并保存";
+      $("stop").title = frozen && state !== "recording" ? "Safety Frozen：采集已自动停止并保存" : "";
       $("success").disabled = state === "recording" || status.episode.last_saved_episode_index == null;
       $("failure").disabled = state === "recording" || status.episode.last_saved_episode_index == null;
       $("discard").disabled = state === "idle" && status.episode.last_saved_episode_index == null;
@@ -412,7 +414,11 @@ INDEX_HTML = """<!doctype html>
         const cams = status.cameras || {};
         renderCameras(cams);
         const frozenBanner = status.control.safety_frozen
-          ? [pill("Safety Frozen", "bad"), pill("已自动停止并保存；episode 已污染，需重启/重连后继续", "warn")]
+          ? [
+              pill("Safety Frozen", "bad"),
+              pill("采集已自动停止并保存；该 episode 已污染，不能 accepted/export；需重启/重连后继续", "warn"),
+              pill("Label 可保存，但 accepted=false", "warn")
+            ]
           : [];
         $("topStatus").innerHTML = [
           ...frozenBanner,

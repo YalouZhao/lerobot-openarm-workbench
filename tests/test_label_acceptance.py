@@ -87,6 +87,10 @@ def test_web_exposes_dry_teleop_controls() -> None:
 
 def test_web_exposes_safety_frozen_banner_and_disables_unsafe_controls() -> None:
     assert "Safety Frozen" in INDEX_HTML
+    assert "采集已自动停止并保存" in INDEX_HTML
+    assert "不能 accepted/export" in INDEX_HTML
+    assert "Label 可保存，但 accepted=false" in INDEX_HTML
+    assert '"已自动停止"' in INDEX_HTML
     assert 'status.control.safety_frozen' in INDEX_HTML
     assert 'state === "recording" || readyBlocked || syncBlocked || frozen' in INDEX_HTML
     assert '$("moveReady").disabled = state === "recording" || state === "moving_ready" || status.control.dry_teleop_enabled || frozen' in INDEX_HTML

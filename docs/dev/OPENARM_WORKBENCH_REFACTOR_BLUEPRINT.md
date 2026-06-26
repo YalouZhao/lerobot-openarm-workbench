@@ -928,3 +928,19 @@ Required behavior:
 6. DQ values override the base config control DQ thresholds.
 7. task profile name/path/SOP are visible in status for operator verification.
 8. This priority remains file-level management; full UI profile switching is out of scope.
+
+### 16.9 Priority 4: Safety Frozen UX completion
+
+Modify:
+
+- `src/workbench/web_assets.py`: make the Frozen state explicit in the top status area and Stop button state.
+- `tests/test_label_acceptance.py`: assert that the web UI exposes the required Frozen warning and disabled unsafe controls.
+
+Required behavior:
+
+1. When `status.control.safety_frozen=true`, the UI displays `Safety Frozen`.
+2. The UI states that collection was automatically stopped/saved, the episode is contaminated, and it cannot be accepted/exported.
+3. The UI states that label can still be saved but `accepted=false`.
+4. When frozen and not recording, the Stop button is disabled by the existing state rule and its text changes to `已自动停止`.
+5. Start, Move to Ready, Sync, dry teleop enable, dataset switch/create, and training export remain disabled while frozen.
+6. Label success/failure/discard controls continue to follow the existing saved-episode rules so the operator can mark the task result without overriding acceptance gates.
