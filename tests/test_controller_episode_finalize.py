@@ -1146,6 +1146,140 @@ def test_stop_episode_dq_fails_missing_verified_safety_metadata(tmp_path: Path) 
     assert record["accepted"] is False
 
 
+def test_stop_episode_writes_timing_sidecar_and_summary(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={"default_task": "test task"},
+    )
+    controller = WorkbenchController(settings, session_id="timing-sidecar-test")
+    controller.dataset = FakeDataset()
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-26T10:00:00+08:00"
+    controller.current_frame_count = 2
+    controller.current_record_start = time.perf_counter() - 1.0
+    controller.current_timing_events = [
+        {
+            "frame_index": 0,
+            "control_step_start_time_ns": 100_000_000,
+            "follower_obs_time_ns": 110_000_000,
+            "master_read_time_ns": 120_000_000,
+            "action_send_time_ns": 140_000_000,
+            "control_step_end_time_ns": 150_000_000,
+        },
+        {
+            "frame_index": 1,
+            "control_step_start_time_ns": 200_000_000,
+            "follower_obs_time_ns": 210_000_000,
+            "master_read_time_ns": 220_000_000,
+            "action_send_time_ns": 260_000_000,
+            "control_step_end_time_ns": 280_000_000,
+        },
+    ]
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    record = controller.dataset_manifest.read_episodes()[0]
+
+    sidecar = tmp_path / "sessions" / "timing-sidecar-test" / "timing_episode_000000.json"
+    payload = json.loads(sidecar.read_text())
+    assert record["timing_summary"]["event_count"] == 2
+    assert record["timing_summary"]["target_period_ms"] == 33.333
+    assert record["timing_sidecar"] == "timing_episode_000000.json"
+    assert payload["summary"] == record["timing_summary"]
+    assert len(payload["events"]) == 2
+
+
+def test_control_step_buffers_timing_event_in_memory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={"main": {"type": "opencv"}},
+        control={"default_task": "test task"},
+    )
+    controller = WorkbenchController(settings, session_id="timing-buffer-test")
+
+    class TimingRobot:
+        is_connected = True
+
+        def get_observation(self) -> dict:
+            return {"joint.pos": 0.0, "main": object()}
+
+        def send_action(self, action: dict) -> dict:
+            return dict(action)
+
+    class TimingTeleop:
+        is_connected = True
+
+        def get_action(self) -> dict:
+            return {"joint.pos": 1.0}
+
+    controller.robot = TimingRobot()
+    controller.teleop = TimingTeleop()
+    controller.dataset = FakeRecordingDataset()
+    controller.recording = True
+    controller.current_task = "test task"
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: dict(obs)
+    monkeypatch.setattr(controller_module, "_encode_jpeg_rgb", lambda frame, quality: b"jpeg")
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    controller._control_step()
+
+    assert len(controller.current_timing_events) == 1
+    event = controller.current_timing_events[0]
+    assert event["frame_index"] == 0
+    assert event["control_step_start_time_ns"] <= event["follower_obs_time_ns"]
+    assert event["follower_obs_time_ns"] <= event["master_read_time_ns"]
+    assert event["master_read_time_ns"] <= event["action_send_time_ns"]
+    assert event["action_send_time_ns"] <= event["control_step_end_time_ns"]
+    assert "main_image_acquire_time_ns" in event
+    assert not list((tmp_path / "sessions" / "timing-buffer-test").glob("timing_episode_*.json"))
+
+
 def test_auto_safety_stop_persists_freeze_metadata_and_blocks_success_acceptance(
     tmp_path: Path,
 ) -> None:

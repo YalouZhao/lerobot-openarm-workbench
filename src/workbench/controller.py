@@ -47,6 +47,7 @@ from .openarm_mini_compat import (
 )
 from .ready_controller import ReadyController, ReadySettings
 from .safety import FollowerSafetyProcessor, SafetyResult
+from .timing import summarize_timing_events, write_timing_sidecar
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,7 @@ class WorkbenchController:
         self.current_dq_reasons: set[str] = set()
         self.current_command_validation: dict[str, Any] = {}
         self.current_tracking_validation: dict[str, Any] = {}
+        self.current_timing_events: list[dict[str, Any]] = []
         self.safety_frozen = False
         self._mismatch_streak = 0
         self._tracking_contamination_streak = 0
@@ -248,6 +250,7 @@ class WorkbenchController:
             self.discard_requested = False
             self.current_contamination_reasons = set()
             self.current_dq_reasons = set()
+            self.current_timing_events = []
             self.auto_stopped_by_safety = False
             self.auto_stop_save_status = ""
             if self.settings.safety is not None and not self.settings.safety.safety_config_verified:
@@ -318,6 +321,17 @@ class WorkbenchController:
                 dq_status = "fail" if contamination_reasons or hard_gate_reasons else (
                     "warning" if self.current_dq_reasons else "pass"
                 )
+                timing_events = list(self.current_timing_events)
+                timing_summary = summarize_timing_events(
+                    timing_events,
+                    target_fps=float(self.settings.dataset.fps),
+                )
+                timing_sidecar = write_timing_sidecar(
+                    self.manifest.session_dir,
+                    episode_index=episode_index,
+                    events=timing_events,
+                    summary=timing_summary,
+                )
                 record = EpisodeRecord(
                     episode_index=episode_index,
                     task=task,
@@ -370,6 +384,8 @@ class WorkbenchController:
                     ready_result=dict(self.latest_ready_result or {}),
                     auto_stopped_by_safety=auto_stopped_by_safety,
                     auto_stop_save_status="saved" if auto_stopped_by_safety else "",
+                    timing_summary=dict(timing_summary),
+                    timing_sidecar=timing_sidecar.name,
                     dq_status=dq_status,
                     dq_reasons=tuple(sorted(dq_reasons)),
                 )
@@ -1302,7 +1318,9 @@ class WorkbenchController:
             time.sleep(0.1)
             return
 
+        control_step_start_time_ns = time.monotonic_ns()
         obs = robot.get_observation()
+        follower_obs_time_ns = time.monotonic_ns()
         obs_processed = self.robot_observation_processor(obs)
         self._update_preview_frames(obs_processed)
 
@@ -1310,6 +1328,7 @@ class WorkbenchController:
             return
 
         act = teleop.get_action()
+        master_read_time_ns = time.monotonic_ns()
         act_compat = self.compat_mapper.map_action(act)
         act_processed_teleop = self.teleop_action_processor((act_compat, obs))
         robot_action_to_send = self.robot_action_processor((act_processed_teleop, obs))
@@ -1351,6 +1370,7 @@ class WorkbenchController:
             self.last_effective_time_ns = now_ns
             self._track_follower_tracking(safety_result)
         send_result = robot.send_action(dict(command.effective_command))
+        action_send_time_ns = time.monotonic_ns()
         command = command.with_send_result(send_result)
         mismatch_atol = (
             self.settings.safety.driver_mismatch_atol if self.settings.safety is not None else 1e-6
@@ -1382,6 +1402,7 @@ class WorkbenchController:
             is_recording = self.recording
             dataset = self.dataset
             task = self.current_task
+            frame_index = self.current_frame_count
         if is_recording and dataset is not None:
             observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
             training_action = command.training_action(self.settings.dataset.action_semantics)
@@ -1396,6 +1417,17 @@ class WorkbenchController:
                 with self.dataset_lock:
                     if self.dataset is dataset:
                         dataset.add_frame(frame)
+                self._append_timing_event(
+                    {
+                        "frame_index": frame_index,
+                        "control_step_start_time_ns": control_step_start_time_ns,
+                        "follower_obs_time_ns": follower_obs_time_ns,
+                        "master_read_time_ns": master_read_time_ns,
+                        "action_send_time_ns": action_send_time_ns,
+                        "control_step_end_time_ns": time.monotonic_ns(),
+                        **self._image_timing_fields(obs_processed, follower_obs_time_ns),
+                    }
+                )
 
     @staticmethod
     def _is_number(value: Any) -> bool:
@@ -1404,6 +1436,18 @@ class WorkbenchController:
         except (TypeError, ValueError):
             return False
         return True
+
+    def _append_timing_event(self, event: Mapping[str, Any]) -> None:
+        with self.lock:
+            if self.recording:
+                self.current_timing_events.append(dict(event))
+
+    def _image_timing_fields(self, obs_processed: Mapping[str, Any], timestamp_ns: int) -> dict[str, int]:
+        fields: dict[str, int] = {}
+        for camera_name in self.settings.cameras:
+            if camera_name in obs_processed:
+                fields[f"{camera_name}_image_acquire_time_ns"] = timestamp_ns
+        return fields
 
     def _enter_safety_freeze(self, reason: str, message: str) -> None:
         was_recording = False

@@ -64,6 +64,8 @@ class EpisodeRecord:
     ready_result: dict[str, Any] = field(default_factory=dict)
     auto_stopped_by_safety: bool = False
     auto_stop_save_status: str = ""
+    timing_summary: dict[str, Any] = field(default_factory=dict)
+    timing_sidecar: str = ""
     dq_status: str = "pass"
     dq_reasons: tuple[str, ...] = ()
     acceptance_reasons: tuple[str, ...] = ()
