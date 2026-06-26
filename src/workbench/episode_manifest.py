@@ -62,6 +62,9 @@ class EpisodeRecord:
     tracking_validation: dict[str, Any] = field(default_factory=dict)
     ready_state: str = "invalid"
     ready_result: dict[str, Any] = field(default_factory=dict)
+    sync_valid_at_record_start: bool = False
+    sync_state_at_record_start: str = "invalid"
+    sync_result_at_record_start: dict[str, Any] = field(default_factory=dict)
     auto_stopped_by_safety: bool = False
     auto_stop_save_status: str = ""
     timing_summary: dict[str, Any] = field(default_factory=dict)

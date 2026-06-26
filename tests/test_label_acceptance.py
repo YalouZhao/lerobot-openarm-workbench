@@ -45,6 +45,19 @@ def test_web_exposes_dataset_lifecycle_controls() -> None:
     assert '"/api/dataset/switch"' in INDEX_HTML
 
 
+def test_web_exposes_training_export_controls() -> None:
+    assert 'id="exportOutputRoot"' in INDEX_HTML
+    assert 'id="exportOutputRepoId"' in INDEX_HTML
+    assert 'id="exportDryRun"' in INDEX_HTML
+    assert 'id="exportStart"' in INDEX_HTML
+    assert 'id="exportStatus"' in INDEX_HTML
+    assert '"/api/export/training-package/dry-run"' in INDEX_HTML
+    assert '"/api/export/training-package/start"' in INDEX_HTML
+    assert '"/api/export/training-package/status"' in INDEX_HTML
+    assert '$("exportDryRun").disabled = state === "recording" || frozen' in INDEX_HTML
+    assert '$("exportStart").disabled = state === "recording" || frozen' in INDEX_HTML
+
+
 def test_web_exposes_move_to_ready_control() -> None:
     assert 'id="moveReady"' in INDEX_HTML
     assert '"/api/ready/move"' in INDEX_HTML

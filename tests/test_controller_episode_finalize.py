@@ -1177,6 +1177,9 @@ def test_stop_episode_writes_timing_sidecar_and_summary(tmp_path: Path) -> None:
     controller.current_started_at = "2026-06-26T10:00:00+08:00"
     controller.current_frame_count = 2
     controller.current_record_start = time.perf_counter() - 1.0
+    controller.current_sync_valid_at_record_start = True
+    controller.current_sync_state_at_record_start = "valid"
+    controller.current_sync_result_at_record_start = {"ok": True, "state": "valid"}
     controller.current_timing_events = [
         {
             "frame_index": 0,
@@ -1205,6 +1208,9 @@ def test_stop_episode_writes_timing_sidecar_and_summary(tmp_path: Path) -> None:
     assert record["timing_summary"]["event_count"] == 2
     assert record["timing_summary"]["target_period_ms"] == 33.333
     assert record["timing_sidecar"] == "timing_episode_000000.json"
+    assert record["sync_valid_at_record_start"] is True
+    assert record["sync_state_at_record_start"] == "valid"
+    assert record["sync_result_at_record_start"] == {"ok": True, "state": "valid"}
     assert payload["summary"] == record["timing_summary"]
     assert len(payload["events"]) == 2
 

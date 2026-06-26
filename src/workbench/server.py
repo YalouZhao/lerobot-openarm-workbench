@@ -33,6 +33,9 @@ def make_handler(controller: WorkbenchController):
             if parsed.path == "/api/dataset/status":
                 self._send_json(controller.dataset_status())
                 return
+            if parsed.path == "/api/export/training-package/status":
+                self._send_json(controller.training_export_status())
+                return
             if parsed.path.startswith("/stream/"):
                 camera = parsed.path.rsplit("/", 1)[-1]
                 self._stream_camera(camera)
@@ -85,6 +88,28 @@ def make_handler(controller: WorkbenchController):
                             root=str(body.get("root", "")),
                             repo_id=str(body.get("repo_id", "")),
                             session_root=body.get("session_root"),
+                        )
+                    )
+                    return
+                if parsed.path == "/api/export/training-package/dry-run":
+                    self._send_json(
+                        controller.export_training_dry_run(
+                            source_root=str(body.get("source_root", "")),
+                            source_repo_id=str(body.get("source_repo_id", "")),
+                            output_root=str(body.get("output_root", "")),
+                            output_repo_id=str(body.get("output_repo_id", "")),
+                            config_file=body.get("config_file"),
+                        )
+                    )
+                    return
+                if parsed.path == "/api/export/training-package/start":
+                    self._send_json(
+                        controller.start_training_export(
+                            source_root=str(body.get("source_root", "")),
+                            source_repo_id=str(body.get("source_repo_id", "")),
+                            output_root=str(body.get("output_root", "")),
+                            output_repo_id=str(body.get("output_repo_id", "")),
+                            config_file=body.get("config_file"),
                         )
                     )
                     return

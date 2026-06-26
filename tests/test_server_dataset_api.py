@@ -121,6 +121,18 @@ class FakeController:
         self.calls.append(("disable_teleop", None))
         return {"ok": True, "teleop": {"enabled": False, "mode": "dry"}}
 
+    def export_training_dry_run(self, **kwargs) -> dict:
+        self.calls.append(("export_dry_run", kwargs))
+        return {"ok": True, "dry_run": True, "exported_episode_count": 1}
+
+    def start_training_export(self, **kwargs) -> dict:
+        self.calls.append(("export_start", kwargs))
+        return {"ok": True, "job_id": "job-1", "status": "running"}
+
+    def training_export_status(self) -> dict:
+        self.calls.append(("export_status", None))
+        return {"ok": True, "job_id": "job-1", "status": "succeeded"}
+
     def start_episode(self, task=None) -> dict:
         raise DatasetSchemaError("legacy_unknown dataset root: missing dataset_manifest.json")
 
@@ -171,6 +183,29 @@ def test_dataset_lifecycle_routes_call_controller() -> None:
         assert enabled["teleop"]["enabled"] is True
         disabled = post_json(base, "/api/teleop/disable", {})
         assert disabled["teleop"]["enabled"] is False
+        dry_run = post_json(
+            base,
+            "/api/export/training-package/dry-run",
+            {
+                "source_root": "/tmp/dataset",
+                "source_repo_id": "local/source",
+                "output_root": "/tmp/export",
+                "output_repo_id": "local/export",
+            },
+        )
+        assert dry_run["dry_run"] is True
+        started = post_json(
+            base,
+            "/api/export/training-package/start",
+            {
+                "source_root": "/tmp/dataset",
+                "source_repo_id": "local/source",
+                "output_root": "/tmp/export",
+                "output_repo_id": "local/export",
+            },
+        )
+        assert started["job_id"] == "job-1"
+        assert get_json(base, "/api/export/training-package/status")["status"] == "succeeded"
         assert controller.calls == [
             ("new", {"name": "smoke"}),
             (
@@ -181,6 +216,27 @@ def test_dataset_lifecycle_routes_call_controller() -> None:
             ("sync_master", {"arm": "left"}),
             ("enable_teleop", None),
             ("disable_teleop", None),
+            (
+                "export_dry_run",
+                {
+                    "source_root": "/tmp/dataset",
+                    "source_repo_id": "local/source",
+                    "output_root": "/tmp/export",
+                    "output_repo_id": "local/export",
+                    "config_file": None,
+                },
+            ),
+            (
+                "export_start",
+                {
+                    "source_root": "/tmp/dataset",
+                    "source_repo_id": "local/source",
+                    "output_root": "/tmp/export",
+                    "output_repo_id": "local/export",
+                    "config_file": None,
+                },
+            ),
+            ("export_status", None),
         ]
     finally:
         server.shutdown()

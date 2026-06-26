@@ -4,6 +4,8 @@
 
 > 2026-06-24 hardware revision: `openarm_follower_safety_v1_candidate` showed follower-qpos feedback sawtooth and is quarantined. `openarm_follower_safety_v2_candidate` uses current qpos only for the first max-step reference, then previous `effective_command`; tracking error is monitored separately and may warning/contaminate/freeze before the final hard clamp. The label API never accepts a client-provided `accepted` value.
 
+> 2026-06-26 Post Phase 5 alignment: phases 0-5 of the collection control path are complete. The next work is productionizing collection outputs, not changing the online control path. Priority order is: (1) full training package export plus `dataset_action_contract.json`, (2) collection batch QA report, (3) task profile management, and (4) Safety Frozen UX. The action contract describes only the training dataset action semantics and must not describe an external policy/runtime execution chain.
+
 ## 1. Document status
 
 - Project: `lerobot-openarm-workbench`
@@ -730,3 +732,109 @@ No functional development begins until:
 3. the confirmed independent 4090 clone has been prepared and its baseline verified without losing host-specific ignored config.
 
 After approval, only phase 0 is implemented. Development stops again after phase-0 automated testing and before any commit.
+
+---
+
+## 16. Post Phase 5: Production collection output closure
+
+### 16.1 Scope
+
+Post Phase 5 work is scoped to the collection workbench and its dataset outputs. It does not implement model training, model inference, robot runtime policy execution, or external deployment behavior.
+
+The online collection invariant remains unchanged:
+
+```text
+LeRobot dataset action = follower effective_command
+```
+
+The next implementation target is a complete training package export:
+
+```text
+source collection dataset
+    -> accepted episode filter
+    -> new LeRobot training dataset root
+    -> contiguous episode indexes
+    -> recomputed metadata / stats
+    -> dataset_action_contract.json
+    -> export_report.json
+    -> export_provenance.json
+    -> LeRobotDataset loader validation
+```
+
+### 16.2 Files for priority 1
+
+Create:
+
+- `src/workbench/training_export.py`: pure export planning and execution helpers. It validates source semantics, filters exportable episodes, maps source episode indexes to contiguous export indexes, writes the action contract/report/provenance, and validates the exported dataset with the installed LeRobot loader.
+- `scripts/export_training_package.py`: CLI wrapper around `training_export.py`.
+- `tests/test_training_export.py`: test-first coverage for filtering, contiguous reindexing, contract/report/provenance, dry-run, source immutability, stats regeneration, and loader validation.
+
+Modify as needed:
+
+- `src/workbench/dataset_manifest.py`: reuse existing semantic validation helpers where practical; do not weaken accepted export gates.
+- `scripts/export_accepted_episodes.py`: keep the index-only export behavior stable; do not silently change it into full package export.
+- `docs/SOP_COLLECT_AND_EXPORT.md`: after implementation, document the new training-package export command.
+
+### 16.3 Priority 1 required behavior
+
+1. The exporter never modifies the source dataset root.
+2. The output root must be new unless `--overwrite` is explicitly enabled.
+3. `--dry-run` reports what would be exported and why episodes would be excluded, without writing the output root.
+4. Only episodes satisfying all PRD export gates are included:
+   - `label == success`
+   - `accepted == true`
+   - `dq_status == pass`
+   - `contaminated == false`
+   - `dataset_schema_version == openarm_workbench_v2`
+   - `action_semantics == follower_effective_command`
+   - `safety_config_verified == true`
+   - `compat_mapping_verified == true`
+   - `ready_verified == true`
+   - `sync_valid_at_record_start == true`
+   - no emergency freeze, follower tracking freeze, or relative resync during recording
+   - driver mismatch within threshold
+   - required metadata complete
+5. Exported episode indexes are contiguous from zero, regardless of source indexes.
+6. `export_report.json` records exported/excluded counts, exclusion reasons, and source-to-export episode mapping.
+7. `export_provenance.json` records export time, source/output roots and repo ids, workbench git commit, LeRobot revision, config file path if provided, dataset schema, safety config version, and compatibility mapping version.
+8. `dataset_action_contract.json` records only training dataset action semantics:
+   - `contract_version = openarm_dataset_action_contract_v1`
+   - `dataset_schema_version = openarm_workbench_v2`
+   - `action_semantics = follower_effective_command`
+   - action dimension and canonical action names
+   - units and collection metadata
+   - explicit excluded action sources
+9. `dataset_action_contract.json` must not describe policy runtime, robot runtime control, or external execution procedures.
+10. Stats are regenerated for the exported training package and must not be copied blindly from the collection dataset.
+11. The final exported root must load through the installed `LeRobotDataset` API using the provided `output_repo_id` / `output_root`.
+12. The Workbench UI exposes the exporter through `dry-run`, `start`, and `status` actions, but it delegates all filtering and writing to `src/workbench/training_export.py`.
+13. Formal export runs in a background job and never blocks a long HTTP request.
+14. Export controls are disabled while recording, saving, or safety frozen.
+15. The UI displays exported/excluded counts, exclusion reasons, output path, job status, and errors.
+
+### 16.4 Priority 1 automated acceptance
+
+The test suite must prove:
+
+1. accepted + dq pass + clean episodes are exported;
+2. failure, discard, dq-fail, contaminated, freeze, resync, and semantic-mismatch episodes are excluded;
+3. exported episode indexes are contiguous;
+4. source-to-export mapping is correct;
+5. `dataset_action_contract.json` exists and contains all required semantic fields;
+6. `export_report.json` contains exported and excluded statistics;
+7. `export_provenance.json` contains git commit, config path, schema, safety version, and compatibility version;
+8. stats are regenerated for the output;
+9. source files are not modified by export or dry-run;
+10. dry-run writes no output root;
+11. the exported dataset can be loaded by the installed LeRobotDataset loader;
+12. server routes exist for `/api/export/training-package/dry-run`, `/api/export/training-package/start`, and `/api/export/training-package/status`;
+13. UI controls exist for output root, output repo id, dry-run, export start, and export status;
+14. export buttons are disabled when recording or safety frozen.
+
+### 16.5 Follow-up priorities
+
+After priority 1 is accepted, implement in order:
+
+1. collection batch QA report;
+2. task profile management;
+3. Safety Frozen UX completion.

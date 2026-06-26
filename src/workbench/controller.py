@@ -4,6 +4,7 @@ import logging
 import math
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -48,6 +49,7 @@ from .openarm_mini_compat import (
 from .ready_controller import ReadyController, ReadySettings
 from .safety import FollowerSafetyProcessor, SafetyResult
 from .timing import summarize_timing_events, write_timing_sidecar
+from .training_export import export_training_package
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +137,8 @@ class WorkbenchController:
         self.dataset_lock = threading.RLock()
         self.stop_event = threading.Event()
         self.loop_thread: threading.Thread | None = None
+        self.export_thread: threading.Thread | None = None
+        self.training_export_job: dict[str, Any] = {"ok": True, "status": "idle", "job_id": ""}
 
         self.robot = None
         self.teleop = None
@@ -176,6 +180,9 @@ class WorkbenchController:
         self.current_command_validation: dict[str, Any] = {}
         self.current_tracking_validation: dict[str, Any] = {}
         self.current_timing_events: list[dict[str, Any]] = []
+        self.current_sync_valid_at_record_start = False
+        self.current_sync_state_at_record_start = "invalid"
+        self.current_sync_result_at_record_start: dict[str, Any] = {}
         self.safety_frozen = False
         self._mismatch_streak = 0
         self._tracking_contamination_streak = 0
@@ -251,6 +258,9 @@ class WorkbenchController:
             self.current_contamination_reasons = set()
             self.current_dq_reasons = set()
             self.current_timing_events = []
+            self.current_sync_valid_at_record_start = self.sync_state == "valid"
+            self.current_sync_state_at_record_start = self.sync_state
+            self.current_sync_result_at_record_start = dict(self.latest_sync_result or {})
             self.auto_stopped_by_safety = False
             self.auto_stop_save_status = ""
             if self.settings.safety is not None and not self.settings.safety.safety_config_verified:
@@ -382,6 +392,9 @@ class WorkbenchController:
                     tracking_validation=dict(self.current_tracking_validation),
                     ready_state=self.ready_state,
                     ready_result=dict(self.latest_ready_result or {}),
+                    sync_valid_at_record_start=self.current_sync_valid_at_record_start,
+                    sync_state_at_record_start=self.current_sync_state_at_record_start,
+                    sync_result_at_record_start=dict(self.current_sync_result_at_record_start),
                     auto_stopped_by_safety=auto_stopped_by_safety,
                     auto_stop_save_status="saved" if auto_stopped_by_safety else "",
                     timing_summary=dict(timing_summary),
@@ -853,6 +866,104 @@ class WorkbenchController:
                 session_root=candidate_session_root,
             )
             return {"ok": True, "dataset": self.dataset_status()}
+
+    def export_training_dry_run(
+        self,
+        *,
+        source_root: str,
+        source_repo_id: str,
+        output_root: str,
+        output_repo_id: str,
+        config_file: str | None = None,
+    ) -> dict[str, Any]:
+        self._assert_export_allowed()
+        return export_training_package(
+            source_root=Path(source_root).expanduser(),
+            source_repo_id=str(source_repo_id),
+            output_root=Path(output_root).expanduser(),
+            output_repo_id=str(output_repo_id),
+            dry_run=True,
+            config_file=Path(config_file).expanduser() if config_file else None,
+        )
+
+    def start_training_export(
+        self,
+        *,
+        source_root: str,
+        source_repo_id: str,
+        output_root: str,
+        output_repo_id: str,
+        config_file: str | None = None,
+    ) -> dict[str, Any]:
+        self._assert_export_allowed()
+        with self.lock:
+            if self.training_export_job.get("status") == "running":
+                raise RuntimeError("training export already running")
+            job_id = uuid.uuid4().hex
+            self.training_export_job = {
+                "ok": True,
+                "job_id": job_id,
+                "status": "running",
+                "source_root": str(source_root),
+                "output_root": str(output_root),
+                "started_at": now_iso(),
+                "finished_at": "",
+                "result": None,
+                "error": "",
+            }
+        args = {
+            "source_root": Path(source_root).expanduser(),
+            "source_repo_id": str(source_repo_id),
+            "output_root": Path(output_root).expanduser(),
+            "output_repo_id": str(output_repo_id),
+            "config_file": Path(config_file).expanduser() if config_file else None,
+        }
+        self.export_thread = threading.Thread(
+            target=self._run_training_export_job,
+            args=(job_id, args),
+            daemon=True,
+        )
+        self.export_thread.start()
+        return self.training_export_status()
+
+    def training_export_status(self) -> dict[str, Any]:
+        with self.lock:
+            return dict(self.training_export_job)
+
+    def _run_training_export_job(self, job_id: str, args: dict[str, Any]) -> None:
+        try:
+            result = export_training_package(**args)
+            with self.lock:
+                if self.training_export_job.get("job_id") == job_id:
+                    self.training_export_job.update(
+                        {
+                            "ok": True,
+                            "status": "succeeded",
+                            "finished_at": now_iso(),
+                            "result": result,
+                            "error": "",
+                        }
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("training export failed")
+            with self.lock:
+                if self.training_export_job.get("job_id") == job_id:
+                    self.training_export_job.update(
+                        {
+                            "ok": False,
+                            "status": "failed",
+                            "finished_at": now_iso(),
+                            "result": None,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+
+    def _assert_export_allowed(self) -> None:
+        with self.lock:
+            if self.recording or self.state == "saving":
+                raise RuntimeError("training export is disabled while recording or saving")
+            if self.safety_frozen:
+                raise RuntimeError("training export is disabled while safety is frozen")
 
     def latest_jpeg(self, camera: str) -> bytes | None:
         with self.lock:

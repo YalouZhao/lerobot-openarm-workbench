@@ -38,12 +38,52 @@ Then restart the workbench if it is already running.
 
 Current baseline stores labels in the active session sidecar. Do not upload only `data/`, `meta/`, and `videos/` if labels are needed on another machine.
 
+## Export Training Package
+
+Use the full training-package exporter for data that will enter training:
+
+```bash
+python ~/lerobot_workbench/scripts/export_training_package.py \
+  --source-root /path/to/collection_dataset \
+  --source-repo-id local/source_collection \
+  --output-root /path/to/exported_training_dataset \
+  --output-repo-id local/exported_training_dataset \
+  --config-file ~/lerobot_workbench/config/workbench_config.phase1-hardware-test.json
+```
+
+The exporter:
+
+1. never modifies the source collection dataset;
+2. exports only `label=success`, `accepted=true`, `dq_status=pass`, and non-contaminated episodes;
+3. rewrites exported episode indexes to a contiguous `0..N-1` range;
+4. regenerates LeRobot metadata and stats for the exported training root;
+5. writes `dataset_action_contract.json`, `export_report.json`, and `export_provenance.json`;
+6. validates that the output root can be loaded by `LeRobotDataset`.
+
+Before writing a package, preview the selection:
+
+```bash
+python ~/lerobot_workbench/scripts/export_training_package.py \
+  --source-root /path/to/collection_dataset \
+  --source-repo-id local/source_collection \
+  --output-root /path/to/exported_training_dataset \
+  --output-repo-id local/exported_training_dataset \
+  --dry-run
+```
+
+`dataset_action_contract.json` describes only the action semantics of the exported training dataset:
+
+```text
+action = follower_effective_command
+```
+
+It does not describe any external policy runtime or robot execution chain.
+
 ## Export Accepted Episode Index
 
 ```bash
 python ~/lerobot_workbench/scripts/export_accepted_episodes.py \
-  --session-dir ~/lerobot_workbench/sessions/<session_id>
+  --dataset-root /path/to/collection_dataset
 ```
 
-The data-closed-loop implementation will replace this with a success-only LeRobot v3 training package export.
-
+This index-only export is retained for diagnostics and quick inspection. Use the full training-package export for training data.

@@ -217,6 +217,20 @@ INDEX_HTML = """<!doctype html>
           <button id="switchDataset">切换 dataset root</button>
         </div>
       </section>
+      <section class="dataset-panel">
+        <h2>训练包导出</h2>
+        <div class="dataset-status" id="exportStatus">尚未导出</div>
+        <label for="exportOutputRoot">output root</label>
+        <input id="exportOutputRoot" placeholder="/tmp/lerobot-exported-training-dataset">
+        <label for="exportOutputRepoId">output repo_id</label>
+        <input id="exportOutputRepoId" placeholder="local/exported_training_dataset">
+        <label for="exportConfigFile">config file（可选）</label>
+        <input id="exportConfigFile" placeholder="config/workbench_config.phase1-hardware-test.json">
+        <div class="buttons">
+          <button id="exportDryRun">Dry-run 导出</button>
+          <button id="exportStart">开始导出训练包</button>
+        </div>
+      </section>
       <div class="kv" id="details"></div>
       <div class="log" id="log"></div>
     </aside>
@@ -322,6 +336,8 @@ INDEX_HTML = """<!doctype html>
       $("disableTeleop").disabled = state === "recording" || !status.control.dry_teleop_enabled;
       $("newDataset").disabled = state === "recording" || frozen;
       $("switchDataset").disabled = state === "recording" || frozen;
+      $("exportDryRun").disabled = state === "recording" || frozen;
+      $("exportStart").disabled = state === "recording" || frozen;
     }
     function datasetStateText(state) {
       const map = {
@@ -350,7 +366,44 @@ INDEX_HTML = """<!doctype html>
       if (!$("datasetRoot").value) $("datasetRoot").value = data.root || "";
       if (!$("datasetRepoId").value) $("datasetRepoId").value = data.repo_id || "";
       if (!$("datasetSessionRoot").value) $("datasetSessionRoot").value = data.session_root || "";
+      if (!$("exportOutputRoot").value && data.root) $("exportOutputRoot").value = `${data.root}_training_export`;
+      if (!$("exportOutputRepoId").value && data.repo_id) $("exportOutputRepoId").value = `${data.repo_id}_training_export`;
       return data;
+    }
+    function exportPayload() {
+      return {
+        source_root: $("datasetRoot").value,
+        source_repo_id: $("datasetRepoId").value,
+        output_root: $("exportOutputRoot").value,
+        output_repo_id: $("exportOutputRepoId").value,
+        config_file: $("exportConfigFile").value || null
+      };
+    }
+    function renderExportStatus(data) {
+      if (!data) return;
+      if (data.status) {
+        const cls = data.status === "succeeded" ? "good" : (data.status === "failed" ? "bad" : "warn");
+        const result = data.result || {};
+        $("exportStatus").innerHTML = [
+          pill(`export ${data.status}`, cls),
+          data.job_id ? `<div>job_id: ${data.job_id}</div>` : "",
+          result.output_root ? `<div>output: ${result.output_root}</div>` : "",
+          result.exported_episode_count != null ? `<div>exported: ${result.exported_episode_count}</div>` : "",
+          data.error ? `<div>error: ${data.error}</div>` : ""
+        ].join("");
+        return;
+      }
+      const excluded = data.excluded_reasons ? JSON.stringify(data.excluded_reasons) : "{}";
+      $("exportStatus").innerHTML = [
+        pill("dry-run", "warn"),
+        `<div>will export: ${data.exported_episode_count ?? 0}</div>`,
+        `<div>excluded: ${data.excluded_episode_count ?? 0}</div>`,
+        `<div>reasons: ${excluded}</div>`
+      ].join("");
+    }
+    async function refreshExportStatus() {
+      try { renderExportStatus(await getJson("/api/export/training-package/status")); }
+      catch (err) { log(`导出状态刷新失败：${err.message}`); }
     }
     async function refresh() {
       try {
@@ -447,8 +500,17 @@ INDEX_HTML = """<!doctype html>
       try { const data = await api("/api/dataset/switch", {root: $("datasetRoot").value, repo_id: $("datasetRepoId").value, session_root: $("datasetSessionRoot").value}); log(`已切换数据集：${data.dataset.root}`); refresh(); }
       catch (err) { log(`切换数据集失败：${err.message}`); }
     };
+    $("exportDryRun").onclick = async () => {
+      try { const data = await api("/api/export/training-package/dry-run", exportPayload()); renderExportStatus(data); log(`导出 dry-run：可导出 ${data.exported_episode_count || 0} 条，排除 ${data.excluded_episode_count || 0} 条`); }
+      catch (err) { log(`导出 dry-run 失败：${err.message}`); }
+    };
+    $("exportStart").onclick = async () => {
+      try { const data = await api("/api/export/training-package/start", exportPayload()); renderExportStatus(data); log(`训练包导出已启动：${data.job_id}`); }
+      catch (err) { log(`训练包导出启动失败：${err.message}`); }
+    };
     refresh();
     setInterval(refresh, 1000);
+    setInterval(refreshExportStatus, 3000);
   </script>
 </body>
 </html>
