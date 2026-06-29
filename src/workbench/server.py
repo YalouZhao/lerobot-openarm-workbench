@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 from .controller import WorkbenchController
 from .dataset_manifest import DatasetSchemaError
-from .web_assets import INDEX_HTML
+from .web_assets import APP_CSS, APP_JS, INDEX_HTML
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,12 @@ def make_handler(controller: WorkbenchController):
             parsed = urlparse(self.path)
             if parsed.path == "/":
                 self._send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            if parsed.path == "/static/app.css":
+                self._send_bytes(APP_CSS.encode("utf-8"), "text/css; charset=utf-8")
+                return
+            if parsed.path == "/static/app.js":
+                self._send_bytes(APP_JS.encode("utf-8"), "application/javascript; charset=utf-8")
                 return
             if parsed.path == "/api/status":
                 self._send_json(controller.get_status())

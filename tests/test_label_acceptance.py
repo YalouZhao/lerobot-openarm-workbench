@@ -5,7 +5,12 @@ from pathlib import Path
 
 from workbench.dataset_manifest import CanonicalDatasetManifest
 from workbench.episode_manifest import EpisodeRecord
-from workbench.web_assets import INDEX_HTML
+from workbench.web_assets import APP_JS, INDEX_HTML
+
+# The frontend is served as a slimmed INDEX_HTML (markup) plus external
+# /static/app.js (behaviour). These invariants must hold across the combined
+# assets, so assert against their concatenation.
+WEB_SOURCE = INDEX_HTML + "\n" + APP_JS
 
 
 def record(**overrides) -> EpisodeRecord:
@@ -27,77 +32,105 @@ def record(**overrides) -> EpisodeRecord:
 
 
 def test_web_label_requests_do_not_submit_accepted() -> None:
-    success_handler = INDEX_HTML.split('$("success").onclick', 1)[1].split('$("failure").onclick', 1)[0]
-    failure_handler = INDEX_HTML.split('$("failure").onclick', 1)[1].split('$("discard").onclick', 1)[0]
+    success_handler = WEB_SOURCE.split('$("success").onclick', 1)[1].split('$("failure").onclick', 1)[0]
+    failure_handler = WEB_SOURCE.split('$("failure").onclick', 1)[1].split('$("discard").onclick', 1)[0]
 
     assert "accepted:" not in success_handler
     assert "accepted:" not in failure_handler
 
 
 def test_web_exposes_dataset_lifecycle_controls() -> None:
-    assert 'id="datasetName"' in INDEX_HTML
-    assert 'id="datasetRoot"' in INDEX_HTML
-    assert 'id="datasetRepoId"' in INDEX_HTML
-    assert 'id="newDataset"' in INDEX_HTML
-    assert 'id="switchDataset"' in INDEX_HTML
-    assert '"/api/dataset/status"' in INDEX_HTML
-    assert '"/api/dataset/new"' in INDEX_HTML
-    assert '"/api/dataset/switch"' in INDEX_HTML
+    assert 'id="datasetName"' in WEB_SOURCE
+    assert 'id="datasetRoot"' in WEB_SOURCE
+    assert 'id="datasetRepoId"' in WEB_SOURCE
+    assert 'id="newDataset"' in WEB_SOURCE
+    assert 'id="switchDataset"' in WEB_SOURCE
+    assert '"/api/dataset/status"' in WEB_SOURCE
+    assert '"/api/dataset/new"' in WEB_SOURCE
+    assert '"/api/dataset/switch"' in WEB_SOURCE
 
 
 def test_web_exposes_training_export_controls() -> None:
-    assert 'id="exportOutputRoot"' in INDEX_HTML
-    assert 'id="exportOutputRepoId"' in INDEX_HTML
-    assert 'id="exportDryRun"' in INDEX_HTML
-    assert 'id="exportStart"' in INDEX_HTML
-    assert 'id="exportStatus"' in INDEX_HTML
-    assert '"/api/export/training-package/dry-run"' in INDEX_HTML
-    assert '"/api/export/training-package/start"' in INDEX_HTML
-    assert '"/api/export/training-package/status"' in INDEX_HTML
-    assert '$("exportDryRun").disabled = state === "recording" || frozen' in INDEX_HTML
-    assert '$("exportStart").disabled = state === "recording" || frozen' in INDEX_HTML
+    assert 'id="exportOutputRoot"' in WEB_SOURCE
+    assert 'id="exportOutputRepoId"' in WEB_SOURCE
+    assert 'id="exportDryRun"' in WEB_SOURCE
+    assert 'id="exportStart"' in WEB_SOURCE
+    assert 'id="exportStatus"' in WEB_SOURCE
+    assert '"/api/export/training-package/dry-run"' in WEB_SOURCE
+    assert '"/api/export/training-package/start"' in WEB_SOURCE
+    assert '"/api/export/training-package/status"' in WEB_SOURCE
+    assert '$("exportDryRun").disabled = state === "recording" || frozen' in WEB_SOURCE
+    assert '$("exportStart").disabled = state === "recording" || frozen' in WEB_SOURCE
+
+
+def test_web_removes_deprecated_realsense_reset_control() -> None:
+    assert "resetRs" not in WEB_SOURCE
+    assert "重置深度相机" not in WEB_SOURCE
+    assert "/api/realsense/reset" not in WEB_SOURCE
+
+
+def test_web_exposes_resizable_camera_windows_without_recreating_streams() -> None:
+    assert 'class="camera-board"' in WEB_SOURCE
+    assert 'class="camera-splitter row"' in WEB_SOURCE
+    assert 'class="camera-splitter col"' in WEB_SOURCE
+    assert 'class="camera-size-controls"' in WEB_SOURCE
+    assert 'id="cameraMainSize"' in WEB_SOURCE
+    assert 'id="cameraThumbSize"' in WEB_SOURCE
+    assert 'id="cameraWristSplit"' in WEB_SOURCE
+    assert "主窗口高度" in WEB_SOURCE
+    assert "腕部行高" in WEB_SOURCE
+    assert "左右腕宽度" in WEB_SOURCE
+    assert "允许留白" in WEB_SOURCE
+    assert "applyStageSizing" in WEB_SOURCE
+    assert "applyWristSplit" in WEB_SOURCE
+    assert "bindSplitter" in WEB_SOURCE
+    assert "appendChild(node.wrap)" in WEB_SOURCE
+    assert "created once and MOVED" in WEB_SOURCE
+    assert ".cam.in-main { position: absolute" not in WEB_SOURCE
+    assert "--cam-max" not in WEB_SOURCE
+    assert "calc(${mainVh}vh * 16 / 9)" not in WEB_SOURCE
 
 
 def test_web_exposes_move_to_ready_control() -> None:
-    assert 'id="moveReady"' in INDEX_HTML
-    assert '"/api/ready/move"' in INDEX_HTML
-    assert "status.ready?.state" in INDEX_HTML
+    assert 'id="moveReady"' in WEB_SOURCE
+    assert '"/api/ready/move"' in WEB_SOURCE
+    assert "status.ready?.state" in WEB_SOURCE
 
 
 def test_web_exposes_sync_master_control() -> None:
-    assert 'id="syncMaster"' in INDEX_HTML
-    assert 'id="syncLeft"' in INDEX_HTML
-    assert 'id="syncRight"' in INDEX_HTML
-    assert '"/api/sync/master"' in INDEX_HTML
-    assert 'arm: "left"' in INDEX_HTML
-    assert 'arm: "right"' in INDEX_HTML
-    assert "status.sync?.state" in INDEX_HTML
+    assert 'id="syncMaster"' in WEB_SOURCE
+    assert 'id="syncLeft"' in WEB_SOURCE
+    assert 'id="syncRight"' in WEB_SOURCE
+    assert '"/api/sync/master"' in WEB_SOURCE
+    assert 'arm: "left"' in WEB_SOURCE
+    assert 'arm: "right"' in WEB_SOURCE
+    assert "status.sync?.state" in WEB_SOURCE
 
 
 def test_web_exposes_dry_teleop_controls() -> None:
-    assert 'id="enableTeleop"' in INDEX_HTML
-    assert 'id="disableTeleop"' in INDEX_HTML
-    assert '"/api/teleop/enable"' in INDEX_HTML
-    assert '"/api/teleop/disable"' in INDEX_HTML
-    assert "status.control.dry_teleop_enabled" in INDEX_HTML
-    assert 'status.ready?.required_for_recording && status.ready?.state !== "verified"' in INDEX_HTML
-    assert 'status.sync?.required_for_recording && status.sync?.state !== "valid"' in INDEX_HTML
-    assert "status.control.dry_teleop_enabled" in INDEX_HTML.split('$("moveReady").disabled', 1)[1].split("\n", 1)[0]
+    assert 'id="enableTeleop"' in WEB_SOURCE
+    assert 'id="disableTeleop"' in WEB_SOURCE
+    assert '"/api/teleop/enable"' in WEB_SOURCE
+    assert '"/api/teleop/disable"' in WEB_SOURCE
+    assert "status.control.dry_teleop_enabled" in WEB_SOURCE
+    assert 'status.ready?.required_for_recording && status.ready?.state !== "verified"' in WEB_SOURCE
+    assert 'status.sync?.required_for_recording && status.sync?.state !== "valid"' in WEB_SOURCE
+    assert "status.control.dry_teleop_enabled" in WEB_SOURCE.split('$("moveReady").disabled', 1)[1].split("\n", 1)[0]
 
 
 def test_web_exposes_safety_frozen_banner_and_disables_unsafe_controls() -> None:
-    assert "Safety Frozen" in INDEX_HTML
-    assert "采集已自动停止并保存" in INDEX_HTML
-    assert "不能 accepted/export" in INDEX_HTML
-    assert "Label 可保存，但 accepted=false" in INDEX_HTML
-    assert '"已自动停止"' in INDEX_HTML
-    assert 'status.control.safety_frozen' in INDEX_HTML
-    assert 'state === "recording" || readyBlocked || syncBlocked || frozen' in INDEX_HTML
-    assert '$("moveReady").disabled = state === "recording" || state === "moving_ready" || status.control.dry_teleop_enabled || frozen' in INDEX_HTML
-    assert '$("syncMaster").disabled = state === "recording" || state === "moving_ready" || frozen' in INDEX_HTML
-    assert '$("enableTeleop").disabled = state === "recording" || state === "moving_ready" || status.control.dry_teleop_enabled || frozen' in INDEX_HTML
-    assert '$("newDataset").disabled = state === "recording" || frozen' in INDEX_HTML
-    assert '$("switchDataset").disabled = state === "recording" || frozen' in INDEX_HTML
+    assert "Safety Frozen" in WEB_SOURCE
+    assert "采集已自动停止并保存" in WEB_SOURCE
+    assert "不能 accepted/export" in WEB_SOURCE
+    assert "Label 可保存，但 accepted=false" in WEB_SOURCE
+    assert '"已自动停止"' in WEB_SOURCE
+    assert 'status.control.safety_frozen' in WEB_SOURCE
+    assert 'state === "recording" || readyBlocked || syncBlocked || frozen' in WEB_SOURCE
+    assert '$("moveReady").disabled = state === "recording" || state === "moving_ready" || status.control.dry_teleop_enabled || frozen' in WEB_SOURCE
+    assert '$("syncMaster").disabled = state === "recording" || state === "moving_ready" || frozen' in WEB_SOURCE
+    assert '$("enableTeleop").disabled = state === "recording" || state === "moving_ready" || status.control.dry_teleop_enabled || frozen' in WEB_SOURCE
+    assert '$("newDataset").disabled = state === "recording" || frozen' in WEB_SOURCE
+    assert '$("switchDataset").disabled = state === "recording" || frozen' in WEB_SOURCE
 
 
 def test_dq_warning_success_label_is_saved_but_not_accepted(tmp_path: Path) -> None:

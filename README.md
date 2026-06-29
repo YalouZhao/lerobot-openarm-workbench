@@ -1,77 +1,166 @@
 # LeRobot OpenArm Workbench
 
-Internal data collection workbench for a bimanual OpenArm follower setup using LeRobot v3 datasets and three RGB camera streams.
+OpenArm 双臂 LeRobot 采集工作台，用于在 4090 采集机上完成真机遥操作、数据集生命周期管理、DQ/QA 检查、accepted episode 导出，以及训练包生成。
 
-This repository is the first stable baseline of the collection workbench that has been running on the robot collection host. It intentionally tracks source code, tests, scripts, and configuration templates only. Runtime datasets, sessions, logs, private machine configuration, model weights, and tokens are excluded from git.
-
-## Current Capabilities
-
-- Web UI for live camera viewing.
-- Start / Stop episode collection.
-- Mark episode as success, failure, or discard.
-- Session-level `episodes.jsonl` sidecar manifest.
-- Accepted episode export helper.
-- OpenArm bimanual follower and OpenArm mini teleoperation configuration.
-- Ready pose/path helper for moving to a known safe workspace pose.
-
-## Runtime Layout
-
-Default deployment paths on the collection machine:
+当前正式版围绕一个原则设计：
 
 ```text
-/home/robot/lerobot_workbench
-/home/robot/lerobot_workbench/config/workbench_config.json
-/home/robot/lerobot_workbench/sessions/
-/home/robot/data/<dataset_name>/
+dataset action = follower-space effective_command = robot.send_action(command)
 ```
 
-The browser UI is only a remote client. Cameras, CAN, teleop serial devices, LeRobot recording, and dataset writes all happen on the collection host.
+也就是说，训练数据里的 action 是 Workbench safety layer 后的真实 follower-space 指令，不是 master 原始动作，也不是 driver clamp 之后才被静默改写的动作。
 
-## First-Time Deployment
-
-```bash
-git clone git@github.com:YalouZhao/lerobot-openarm-workbench.git ~/lerobot_workbench
-cd ~/lerobot_workbench
-cp config/workbench_config.example.json config/workbench_config.json
-```
-
-Edit `config/workbench_config.json` for the local machine:
-
-- `dataset.root`
-- `robot.left_arm.port`
-- `robot.right_arm.port`
-- `teleop.port_left`
-- `teleop.port_right`
-- camera `index_or_path` entries
-- `control.default_task`
-
-Start the workbench:
-
-```bash
-~/lerobot_workbench/scripts/start_with_can.sh
-```
-
-Then open:
+## 4090 路径
 
 ```text
-http://<collection-host-ip>:8090
+开发区：/home/sh/src/lerobot-openarm-workbench-dev
+稳定区：/home/sh/lerobot_workbench
+默认稳定端口：8091
+默认开发端口：8092
 ```
 
-## Safety Notes
+稳定区用于正式采集。开发区用于继续开发、测试和代码提交。
 
-- `scripts/start_with_can.sh` configures `can0` and `can1`.
-- `scripts/move_to_ready.py --execute --yes` sends robot actions. Use `--dry-run` first.
-- Do not commit real `config/workbench_config.json`, session files, dataset files, exports, or tokens.
+## 稳定区启动
 
-## Data Closure Roadmap
+```bash
+ssh groot-4090
+cd /home/sh/lerobot_workbench
+source /home/sh/miniforge3/bin/activate lerobot04
+python scripts/start_workbench.py \
+  --config config/workbench_config.phase1-hardware-test.json \
+  --host 0.0.0.0 \
+  --port 8091
+```
 
-The current baseline stores labels in the session sidecar. The next engineering milestone is dataset-root canonical metadata:
+浏览器打开：
 
-- `dataset_manifest.json`
-- dataset-root `episodes.jsonl`
-- `accepted_episodes.json`
-- `manifest_transactions.jsonl`
-- `export_reports/`
+```text
+http://<4090-ip>:8091
+```
 
-See [docs/DATA_CLOSED_LOOP_DESIGN.md](docs/DATA_CLOSED_LOOP_DESIGN.md).
+如果 8091 已经被占用，先确认是否有旧工作台进程：
+
+```bash
+ps -ef | grep start_workbench.py | grep -v grep
+```
+
+## 核心能力
+
+- 三路 RGB 相机实时监控，前端支持相机窗口大小、腕部行高、左右腕宽度调整。
+- Move to Ready 与 Ready verification。
+- Relative teleop Sync Master / Sync Left / Sync Right。
+- Dry Teleop 方向检查。
+- 正式采集 Start / Stop / Success / Failure / Discard。
+- Workbench safety layer：
+  - follower-space hard/soft limit；
+  - max step / velocity limit；
+  - driver mismatch 检测；
+  - follower tracking warning / contamination / freeze。
+- Safety Frozen UX：freeze 后明确禁用危险操作，自动保存 contaminated episode。
+- Dataset lifecycle：
+  - 新建 dataset root；
+  - 切换 dataset root；
+  - empty root 自动初始化；
+  - legacy_unknown / semantic_mismatch 阻止继续写入。
+- 采集批次 QA 报告。
+- Task profile 管理。
+- 训练包导出：
+  - 只导出 `accepted=true + dq_status=pass + contaminated=false`；
+  - episode index 连续；
+  - 生成 `dataset_action_contract.json`、`export_report.json`、`export_provenance.json`；
+  - 导出结果可被 `LeRobotDataset` 加载。
+
+## 重要配置
+
+主配置：
+
+```text
+/home/sh/lerobot_workbench/config/workbench_config.phase1-hardware-test.json
+```
+
+Ready 路径：
+
+```text
+/home/sh/lerobot_workbench/config/ready_path.json
+```
+
+Task profile 示例：
+
+```text
+/home/sh/lerobot_workbench/config/task_profiles/
+```
+
+采集数据常用 root：
+
+```text
+/tmp/lerobot-phase1-hardware-v2-verified/dataset
+```
+
+训练导出常用 root：
+
+```text
+/tmp/lerobot-phase1-hardware-v2-verified/<name>_training_export
+```
+
+## 完整操作说明
+
+正式采集请看：
+
+```text
+docs/SOP_COLLECT_AND_EXPORT.md
+```
+
+里面包含：
+
+- 启动/停机；
+- 检查相机、机器人、遥操作；
+- 记录 Ready 路径；
+- 切换 Ready 路径；
+- 新建/切换 dataset root；
+- Move to Ready；
+- Sync Master；
+- Dry Teleop；
+- 采集、标注、discard；
+- Safety Frozen 后如何恢复；
+- QA 报告；
+- 训练包导出；
+- 常见错误处理。
+
+## 开发验证
+
+在开发区运行：
+
+```bash
+cd /home/sh/src/lerobot-openarm-workbench-dev
+source /home/sh/miniforge3/bin/activate lerobot04
+PYTHONPATH=src python -m pytest -q
+```
+
+当前测试集覆盖 controller、dataset lifecycle、safety、ready/sync、QA、training export、前端静态资源等核心链路。
+
+## Git / 部署约定
+
+- 开发区提交代码。
+- 稳定区只部署已验证版本。
+- 不把 dataset、session、logs、tokens、模型权重提交进 git。
+- 覆盖稳定区前必须跑完整测试。
+- 覆盖稳定区后必须重新确认 8091 能启动，并检查 `/api/status`。
+
+## Safety 语义摘要
+
+采集链路：
+
+```text
+master_action_raw
+→ compatibility mapping
+→ follower-space action
+→ Workbench safety layer
+→ effective_command
+→ dataset action
+→ robot.send_action(effective_command)
+→ LeRobot driver clamp 仅作为最后防线
+```
+
+如果 driver 仍然改写 command，Workbench 会记录 mismatch；超过阈值会污染 episode，阻止 accepted/export。
 
