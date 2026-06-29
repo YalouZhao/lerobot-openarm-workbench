@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -24,9 +25,24 @@ def _install_fake_lerobot_modules() -> None:
     for name, module in modules.items():
         sys.modules.setdefault(name, module)
 
-    sys.modules["lerobot.robots"].make_robot_from_config = lambda cfg: None
-    sys.modules["lerobot.robots.bi_openarm_follower.config_bi_openarm_follower"].BiOpenArmFollowerConfig = object
-    sys.modules["lerobot.robots.openarm_follower.config_openarm_follower"].OpenArmFollowerConfigBase = object
+    sys.modules["lerobot.robots"].make_robot_from_config = lambda cfg: cfg
+
+    @dataclass
+    class FakeOpenArmFollowerConfigBase:
+        port: str
+        side: str | None = None
+
+    @dataclass
+    class FakeBiOpenArmFollowerConfig:
+        left_arm_config: FakeOpenArmFollowerConfigBase
+        right_arm_config: FakeOpenArmFollowerConfigBase
+
+    sys.modules[
+        "lerobot.robots.bi_openarm_follower.config_bi_openarm_follower"
+    ].BiOpenArmFollowerConfig = FakeBiOpenArmFollowerConfig
+    sys.modules[
+        "lerobot.robots.openarm_follower.config_openarm_follower"
+    ].OpenArmFollowerConfigBase = FakeOpenArmFollowerConfigBase
 
 
 _install_fake_lerobot_modules()
@@ -154,3 +170,18 @@ def test_parse_waypoint_specs_uses_names_and_durations() -> None:
 def test_parse_waypoint_specs_rejects_non_positive_duration() -> None:
     with pytest.raises(ValueError, match="duration_s must be positive"):
         move_to_ready.parse_waypoint_specs("lift:0")
+
+
+def test_build_robot_uses_current_bi_openarm_config_signature() -> None:
+    settings = types.SimpleNamespace(
+        robot={
+            "id": "my_bimanual_openarm",
+            "left_arm": {"port": "can1", "side": "left"},
+            "right_arm": {"port": "can0", "side": "right"},
+        }
+    )
+
+    cfg = move_to_ready.build_robot(settings)
+
+    assert cfg.left_arm_config.port == "can1"
+    assert cfg.right_arm_config.port == "can0"

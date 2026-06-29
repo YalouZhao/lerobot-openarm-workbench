@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST="${1:-0.0.0.0}"
-PORT="${2:-8090}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+WORKBENCH_ROOT="${WORKBENCH_ROOT:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
+if [[ -f "$WORKBENCH_ROOT/.env" ]]; then
+  source "$WORKBENCH_ROOT/.env"
+fi
+
+HOST="${1:-${WORKBENCH_HOST:-0.0.0.0}}"
+PORT="${2:-${WORKBENCH_PORT:-8090}}"
 RESTART="${RESTART:-0}"
+CONDA_SH="${CONDA_SH:-$HOME/miniconda3/etc/profile.d/conda.sh}"
+CONDA_ENV="${CONDA_ENV:-lerobot}"
 
 existing_pids="$(
   ps -eo pid=,cmd= | awk -v port="$PORT" '
@@ -31,8 +39,8 @@ if [[ -n "$existing_pids" ]]; then
   fi
 fi
 
-source "$HOME/miniconda3/etc/profile.d/conda.sh"
-conda activate lerobot
+source "$CONDA_SH"
+conda activate "$CONDA_ENV"
 
 echo "[1/3] Setting up CAN interfaces can0,can1"
 echo "      This may ask for the robot account sudo password."
@@ -43,4 +51,4 @@ ip -details link show can0 | sed -n '1,8p'
 ip -details link show can1 | sed -n '1,8p'
 
 echo "[3/3] Starting LeRobot workbench on ${HOST}:${PORT}"
-python "$HOME/lerobot_workbench/scripts/start_workbench.py" --host "$HOST" --port "$PORT"
+python "$WORKBENCH_ROOT/scripts/start_workbench.py" --host "$HOST" --port "$PORT"

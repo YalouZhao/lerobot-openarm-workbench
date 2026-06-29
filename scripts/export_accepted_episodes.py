@@ -8,16 +8,18 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from workbench.episode_manifest import EpisodeManifest
+from workbench.dataset_manifest import export_v2_accepted_indices
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--session-dir", required=True)
+    parser.add_argument("--dataset-root", required=True)
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
-    manifest = EpisodeManifest(Path(args.session_dir).expanduser())
-    output = manifest.export_accepted(Path(args.output).expanduser() if args.output else None)
+    output = export_v2_accepted_indices(
+        Path(args.dataset_root).expanduser(),
+        Path(args.output).expanduser() if args.output else None,
+    )
     print(output)
 
 

@@ -4,6 +4,9 @@
   "dataset": {
     "repo_id": "local/example_dataset",
     "root": "/home/robot/data/example_dataset",
+    "dataset_schema_version": "openarm_workbench_v2",
+    "action_semantics": "follower_effective_command",
+    "command_frame_version": 1,
     "fps": 30,
     "episode_time_s": 60,
     "streaming_encoding": true,
@@ -28,8 +31,280 @@
   },
   "teleop": {
     "id": "my_openarm_mini",
+    "mode": "absolute_passthrough",
+    "apply_openarm_mini_compat_mapping": true,
+    "compat_mapping_version": "openarm_mini_818892a3",
+    "compat_mapping_verified": false,
     "port_right": "/dev/ttyACM1",
     "port_left": "/dev/ttyACM0"
+  },
+  "safety": {
+    "safety_config_version": "openarm_follower_safety_v2",
+    "safety_config_verified": true,
+    "driver_mismatch_atol": 0.0001,
+    "mismatch_contamination_frames": 3,
+    "tracking_error_persistence_frames": 3,
+    "joints": {
+      "right_joint_1.pos": {
+        "hard_limit": [
+          -75.0,
+          75.0
+        ],
+        "soft_limit": [
+          -75.0,
+          75.0
+        ],
+        "deadband": 0.0,
+        "max_step": 2.0,
+        "max_velocity": 60.0,
+        "tracking_error_warning": 6.0,
+        "tracking_error_contamination": 10.0,
+        "tracking_error_freeze": 20.0
+      },
+      "right_joint_2.pos": {
+        "hard_limit": [
+          -9.0,
+          90.0
+        ],
+        "soft_limit": [
+          -9.0,
+          90.0
+        ],
+        "deadband": 0.0,
+        "max_step": 2.0,
+        "max_velocity": 60.0,
+        "tracking_error_warning": 6.0,
+        "tracking_error_contamination": 10.0,
+        "tracking_error_freeze": 20.0
+      },
+      "right_joint_3.pos": {
+        "hard_limit": [
+          -85.0,
+          85.0
+        ],
+        "soft_limit": [
+          -85.0,
+          85.0
+        ],
+        "deadband": 0.0,
+        "max_step": 2.0,
+        "max_velocity": 60.0,
+        "tracking_error_warning": 6.0,
+        "tracking_error_contamination": 10.0,
+        "tracking_error_freeze": 20.0
+      },
+      "right_joint_4.pos": {
+        "hard_limit": [
+          0.0,
+          135.0
+        ],
+        "soft_limit": [
+          0.0,
+          135.0
+        ],
+        "deadband": 0.0,
+        "max_step": 2.0,
+        "max_velocity": 60.0,
+        "tracking_error_warning": 6.0,
+        "tracking_error_contamination": 10.0,
+        "tracking_error_freeze": 20.0
+      },
+      "right_joint_5.pos": {
+        "hard_limit": [
+          -85.0,
+          85.0
+        ],
+        "soft_limit": [
+          -85.0,
+          85.0
+        ],
+        "deadband": 0.0,
+        "max_step": 2.0,
+        "max_velocity": 60.0,
+        "tracking_error_warning": 6.0,
+        "tracking_error_contamination": 10.0,
+        "tracking_error_freeze": 20.0
+      },
+      "right_joint_6.pos": {
+        "hard_limit": [
+          -40.0,
+          40.0
+        ],
+        "soft_limit": [
+          -40.0,
+          40.0
+        ],
+        "deadband": 0.0,
+        "max_step": 2.0,
+        "max_velocity": 60.0,
+        "tracking_error_warning": 6.0,
+        "tracking_error_contamination": 10.0,
+        "tracking_error_freeze": 20.0
+      },
+      "right_joint_7.pos": {
+        "hard_limit": [
+          -80.0,
+          80.0
+        ],
+        "soft_limit": [
+          -80.0,
+          80.0
+        ],
+        "deadband": 0.0,
+        "max_step": 2.0,
+        "max_velocity": 60.0,
+        "tracking_error_warning": 6.0,
+        "tracking_error_contamination": 10.0,
+        "tracking_error_freeze": 20.0
+      },
+      "right_gripper.pos": {
+        "hard_limit": [
+          -65.0,
+          0.0
+        ],
+        "soft_limit": [
+          -65.0,
+          0.0
+        ],
+        "deadband": 0.0,
+        "max_step": 4.0,
+        "max_velocity": 120.0,
+        "tracking_error_warning": 10.0,
+        "tracking_error_contamination": 18.0,
+        "tracking_error_freeze": 30.0
+      },
+      "left_joint_1.pos": {
+        "hard_limit": [
+          -75.0,
+          75.0
+        ],
+        "soft_limit": [
+          -75.0,
+          75.0
+        ],
+        "deadband": 0.0,
+        "max_step": 2.0,
+        "max_velocity": 60.0,
+        "tracking_error_warning": 6.0,
+        "tracking_error_contamination": 10.0,
+        "tracking_error_freeze": 20.0
+      },
+      "left_joint_2.pos": {
+        "hard_limit": [
+          -90.0,
+          9.0
+        ],
+        "soft_limit": [
+          -90.0,
+          9.0
+        ],
+        "deadband": 0.0,
+        "max_step": 2.0,
+        "max_velocity": 60.0,
+        "tracking_error_warning": 6.0,
+        "tracking_error_contamination": 10.0,
+        "tracking_error_freeze": 20.0
+      },
+      "left_joint_3.pos": {
+        "hard_limit": [
+          -85.0,
+          85.0
+        ],
+        "soft_limit": [
+          -85.0,
+          85.0
+        ],
+        "deadband": 0.0,
+        "max_step": 2.0,
+        "max_velocity": 60.0,
+        "tracking_error_warning": 6.0,
+        "tracking_error_contamination": 10.0,
+        "tracking_error_freeze": 20.0
+      },
+      "left_joint_4.pos": {
+        "hard_limit": [
+          0.0,
+          135.0
+        ],
+        "soft_limit": [
+          0.0,
+          135.0
+        ],
+        "deadband": 0.0,
+        "max_step": 2.0,
+        "max_velocity": 60.0,
+        "tracking_error_warning": 6.0,
+        "tracking_error_contamination": 10.0,
+        "tracking_error_freeze": 20.0
+      },
+      "left_joint_5.pos": {
+        "hard_limit": [
+          -85.0,
+          85.0
+        ],
+        "soft_limit": [
+          -85.0,
+          85.0
+        ],
+        "deadband": 0.0,
+        "max_step": 2.0,
+        "max_velocity": 60.0,
+        "tracking_error_warning": 6.0,
+        "tracking_error_contamination": 10.0,
+        "tracking_error_freeze": 20.0
+      },
+      "left_joint_6.pos": {
+        "hard_limit": [
+          -40.0,
+          40.0
+        ],
+        "soft_limit": [
+          -40.0,
+          40.0
+        ],
+        "deadband": 0.0,
+        "max_step": 2.0,
+        "max_velocity": 60.0,
+        "tracking_error_warning": 6.0,
+        "tracking_error_contamination": 10.0,
+        "tracking_error_freeze": 20.0
+      },
+      "left_joint_7.pos": {
+        "hard_limit": [
+          -80.0,
+          80.0
+        ],
+        "soft_limit": [
+          -80.0,
+          80.0
+        ],
+        "deadband": 0.0,
+        "max_step": 2.0,
+        "max_velocity": 60.0,
+        "tracking_error_warning": 6.0,
+        "tracking_error_contamination": 10.0,
+        "tracking_error_freeze": 20.0
+      },
+      "left_gripper.pos": {
+        "hard_limit": [
+          -65.0,
+          0.0
+        ],
+        "soft_limit": [
+          -65.0,
+          0.0
+        ],
+        "deadband": 0.0,
+        "max_step": 4.0,
+        "max_velocity": 120.0,
+        "tracking_error_warning": 10.0,
+        "tracking_error_contamination": 18.0,
+        "tracking_error_freeze": 30.0
+      }
+    },
+    "verified_by": "hardware_operator",
+    "verified_at": "2026-06-24T16:30:00+08:00",
+    "verification_basis": "user hardware acceptance on 2026-06-24: driver_mismatch=0; max_step_violations=0; no freeze/contamination; gripper sawtooth improved"
   },
   "cameras": {
     "main": {
@@ -68,7 +343,62 @@
     "connect_retries": 5,
     "connect_retry_delay_s": 1.5,
     "auto_reconnect_when_idle": true,
-    "reconnect_cooldown_s": 5.0
+    "reconnect_cooldown_s": 5.0,
+    "min_episode_frames": 10,
+    "min_control_fps_ratio": 0.5,
+    "action_spike_threshold": 8.0
+  },
+  "ready": {
+    "path": "config/ready_path.json",
+    "fps": 30,
+    "tolerance": 2.0,
+    "settle_time_s": 0.2,
+    "verify_after_move": true,
+    "require_ready_for_recording": false
+  },
+  "sync": {
+    "samples": 3,
+    "sample_interval_s": 0.02,
+    "require_sync_for_recording": false,
+    "required_arms": [
+      "left",
+      "right"
+    ],
+    "gains": {
+      "right_joint_1.pos": 1.0,
+      "right_joint_2.pos": 1.0,
+      "right_joint_3.pos": 1.0,
+      "right_joint_4.pos": 1.0,
+      "right_joint_5.pos": 1.0,
+      "right_joint_6.pos": 1.0,
+      "right_joint_7.pos": 1.0,
+      "right_gripper.pos": 1.0,
+      "left_joint_1.pos": 1.0,
+      "left_joint_2.pos": 1.0,
+      "left_joint_3.pos": 1.0,
+      "left_joint_4.pos": 1.0,
+      "left_joint_5.pos": 1.0,
+      "left_joint_6.pos": 1.0,
+      "left_joint_7.pos": 1.0,
+      "left_gripper.pos": 1.0
+    },
+    "deadband": {
+      "right_joint_1.pos": 0.0,
+      "right_joint_2.pos": 0.0,
+      "right_joint_3.pos": 0.0,
+      "right_joint_4.pos": 0.0,
+      "right_joint_5.pos": 0.0,
+      "right_joint_6.pos": 0.0,
+      "right_joint_7.pos": 0.0,
+      "right_gripper.pos": 0.0,
+      "left_joint_1.pos": 0.0,
+      "left_joint_2.pos": 0.0,
+      "left_joint_3.pos": 0.0,
+      "left_joint_4.pos": 0.0,
+      "left_joint_5.pos": 0.0,
+      "left_joint_6.pos": 0.0,
+      "left_joint_7.pos": 0.0,
+      "left_gripper.pos": 0.0
+    }
   }
 }
-

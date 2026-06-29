@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 import sys
+import time
 import types
 from pathlib import Path
+
+import pytest
 
 
 def _install_fake_lerobot_modules() -> None:
@@ -55,7 +59,9 @@ def _install_fake_lerobot_modules() -> None:
     sys.modules["lerobot.datasets"].create_initial_features = lambda *args, **kwargs: {}
     sys.modules["lerobot.processor"].make_default_processors = lambda: (None, None, None)
     sys.modules["lerobot.robots"].make_robot_from_config = lambda cfg: None
-    sys.modules["lerobot.robots.bi_openarm_follower.config_bi_openarm_follower"].BiOpenArmFollowerConfig = object
+    sys.modules[
+        "lerobot.robots.bi_openarm_follower.config_bi_openarm_follower"
+    ].BiOpenArmFollowerConfig = object
     sys.modules["lerobot.robots.openarm_follower.config_openarm_follower"].OpenArmFollowerConfigBase = object
     sys.modules["lerobot.teleoperators"].make_teleoperator_from_config = lambda cfg: None
     sys.modules["lerobot.teleoperators.openarm_mini.config_openarm_mini"].OpenArmMiniConfig = object
@@ -71,8 +77,63 @@ _install_fake_lerobot_modules()
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from workbench.config import DatasetSettings, WorkbenchSettings
-from workbench.controller import WorkbenchController
+import workbench.controller as controller_module  # noqa: E402
+from workbench.config import DatasetSettings, WorkbenchSettings  # noqa: E402
+from workbench.controller import WorkbenchController  # noqa: E402
+from workbench.dataset_manifest import DatasetSchemaError  # noqa: E402
+from workbench.safety import EXPECTED_FOLLOWER_ACTION_KEYS, parse_safety_settings  # noqa: E402
+
+
+def make_safety_settings(*, verified: bool = True):
+    hard_limits = {
+        "right_joint_1.pos": [-75.0, 75.0],
+        "right_joint_2.pos": [-9.0, 90.0],
+        "right_joint_3.pos": [-85.0, 85.0],
+        "right_joint_4.pos": [0.0, 135.0],
+        "right_joint_5.pos": [-85.0, 85.0],
+        "right_joint_6.pos": [-40.0, 40.0],
+        "right_joint_7.pos": [-80.0, 80.0],
+        "right_gripper.pos": [-65.0, 0.0],
+        "left_joint_1.pos": [-75.0, 75.0],
+        "left_joint_2.pos": [-90.0, 9.0],
+        "left_joint_3.pos": [-85.0, 85.0],
+        "left_joint_4.pos": [0.0, 135.0],
+        "left_joint_5.pos": [-85.0, 85.0],
+        "left_joint_6.pos": [-40.0, 40.0],
+        "left_joint_7.pos": [-80.0, 80.0],
+        "left_gripper.pos": [-65.0, 0.0],
+    }
+    return parse_safety_settings(
+        {
+            "safety_config_version": "test_safety_v1",
+            "safety_config_verified": verified,
+            **(
+                {
+                    "verified_by": "hardware_operator",
+                    "verified_at": "2026-06-24T16:30:00+08:00",
+                    "verification_basis": "test fixture verified safety config",
+                }
+                if verified
+                else {}
+            ),
+            "driver_mismatch_atol": 1e-4,
+            "mismatch_contamination_frames": 3,
+            "tracking_error_persistence_frames": 3,
+            "joints": {
+                key: {
+                    "hard_limit": hard_limits[key],
+                    "soft_limit": hard_limits[key],
+                    "deadband": 0.0,
+                    "max_step": 4.0 if "gripper" in key else 2.0,
+                    "max_velocity": 120.0 if "gripper" in key else 60.0,
+                    "tracking_error_warning": 5.0,
+                    "tracking_error_contamination": 10.0,
+                    "tracking_error_freeze": 20.0,
+                }
+                for key in EXPECTED_FOLLOWER_ACTION_KEYS
+            },
+        }
+    )
 
 
 class FakeDataset:
@@ -128,3 +189,2110 @@ def test_stop_episode_finalizes_dataset_after_saving(tmp_path: Path) -> None:
     assert fake_dataset.saved is True
     assert finalized == [True]
     assert controller.dataset is None
+
+
+def test_stop_and_label_episode_update_dataset_root_and_session_manifest(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="test")
+    fake_dataset = FakeDataset()
+
+    controller.dataset = fake_dataset
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-09T00:00:00+08:00"
+    controller.current_frame_count = 3
+    controller.current_record_start = 1.0
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    result = controller.label_episode("success")
+
+    assert result["ok"] is True
+    dataset_records = [
+        json.loads(line)
+        for line in (tmp_path / "dataset" / "episodes.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    session_records = [
+        json.loads(line)
+        for line in (tmp_path / "sessions" / "test" / "episodes.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    accepted = json.loads((tmp_path / "dataset" / "accepted_episodes.json").read_text())
+
+    assert dataset_records == session_records
+    assert dataset_records[0]["label"] == "success"
+    assert dataset_records[0]["accepted"] is True
+    assert accepted["episodes"] == [0]
+
+
+def test_discard_after_stop_marks_dataset_root_without_clearing_saved_episode(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="test")
+    fake_dataset = FakeDataset()
+
+    controller.dataset = fake_dataset
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-09T00:00:00+08:00"
+    controller.current_frame_count = 3
+    controller.current_record_start = 1.0
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    result = controller.discard_episode()
+
+    assert result == {"ok": True, "episode_index": 0}
+    dataset_records = [
+        json.loads(line)
+        for line in (tmp_path / "dataset" / "episodes.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    accepted = json.loads((tmp_path / "dataset" / "accepted_episodes.json").read_text())
+
+    assert fake_dataset.saved is True
+    assert dataset_records[0]["label"] == "discard"
+    assert dataset_records[0]["accepted"] is False
+    assert accepted["episodes"] == []
+
+
+class FakeRecordingDataset:
+    features = {}
+
+    def __init__(self) -> None:
+        self.frames: list[dict] = []
+
+    def add_frame(self, frame: dict) -> None:
+        self.frames.append(frame)
+
+
+class FakeRobot:
+    is_connected = True
+
+    def __init__(self) -> None:
+        self.sent_actions: list[dict] = []
+
+    def get_observation(self) -> dict:
+        return {"joint.pos": 5.0}
+
+    def send_action(self, action: dict) -> dict:
+        self.sent_actions.append(dict(action))
+        return {"joint.pos": 11.5}
+
+
+class FakeTeleop:
+    is_connected = True
+
+    def get_action(self) -> dict:
+        return {"joint.pos": 100.0}
+
+
+def test_control_step_records_effective_command_and_logs_driver_mismatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="command-test")
+    robot = FakeRobot()
+    dataset = FakeRecordingDataset()
+    controller.robot = robot
+    controller.teleop = FakeTeleop()
+    controller.dataset = dataset
+    controller.recording = True
+    controller.teleop_action_processor = lambda pair: {"joint.pos": 10.0}
+    controller.robot_action_processor = lambda pair: {"joint.pos": 12.0}
+    controller.robot_observation_processor = lambda obs: obs
+
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    controller._control_step()
+    controller._control_step()
+
+    assert robot.sent_actions == [{"joint.pos": 12.0}, {"joint.pos": 12.0}]
+    assert dataset.frames[0]["action"] == {"joint.pos": 12.0}
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "sessions" / "command-test" / "events.jsonl").read_text().splitlines()
+    ]
+    mismatch = [event for event in events if event["event"] == "driver_command_mismatch"]
+    assert len(mismatch) == 1
+    assert mismatch[0]["mismatches"]["changed"]["joint.pos"] == {
+        "expected": 12.0,
+        "actual": 11.5,
+    }
+
+
+def test_control_step_maps_gripper_before_driver_and_dataset(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={
+            "id": "teleop",
+            "mode": "absolute_passthrough",
+            "apply_openarm_mini_compat_mapping": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": False,
+        },
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="gripper-command-test")
+    dataset = FakeRecordingDataset()
+
+    class GripperRobot(FakeRobot):
+        def send_action(self, action: dict) -> dict:
+            self.sent_actions.append(dict(action))
+            return dict(action)
+
+    class GripperTeleop(FakeTeleop):
+        def get_action(self) -> dict:
+            return {"right_gripper.pos": 100.0}
+
+    robot = GripperRobot()
+    controller.robot = robot
+    controller.teleop = GripperTeleop()
+    controller.dataset = dataset
+    controller.recording = True
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: obs
+
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    controller._control_step()
+
+    assert robot.sent_actions == [{"right_gripper.pos": -65.0}]
+    assert dataset.frames == [
+        {
+            "observation": {"joint.pos": 5.0},
+            "action": {"right_gripper.pos": -65.0},
+            "task": "",
+        }
+    ]
+
+
+def test_control_step_safety_precedes_shared_effective_command(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={
+            "id": "teleop",
+            "mode": "absolute_passthrough",
+            "apply_openarm_mini_compat_mapping": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": True,
+        },
+        cameras={},
+        control={},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="safe-command-test")
+    dataset = FakeRecordingDataset()
+
+    class FullRobot:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.sent_actions: list[dict[str, float]] = []
+
+        def get_observation(self) -> dict[str, float]:
+            return {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS}
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            self.sent_actions.append(dict(action))
+            return dict(action)
+
+    class FullTeleop:
+        is_connected = True
+
+        def get_action(self) -> dict[str, float]:
+            action = {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS}
+            action["right_joint_1.pos"] = 100.0
+            action["right_gripper.pos"] = 100.0
+            return action
+
+    robot = FullRobot()
+    controller.robot = robot
+    controller.teleop = FullTeleop()
+    controller.dataset = dataset
+    controller.recording = True
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: obs
+
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    controller._control_step()
+
+    sent = robot.sent_actions[0]
+    recorded = dataset.frames[0]["action"]
+    assert sent == recorded
+    assert sent["right_joint_1.pos"] == pytest.approx(2.0)
+    # Compatibility maps 100 -> -65 exactly once, then safety limits the first step to -4.
+    assert sent["right_gripper.pos"] == pytest.approx(-4.0)
+    assert controller.last_effective_command == sent
+
+
+def test_persistent_driver_mismatch_contaminates_active_episode(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={
+            "id": "teleop",
+            "mode": "absolute_passthrough",
+            "apply_openarm_mini_compat_mapping": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": True,
+        },
+        cameras={},
+        control={},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="mismatch-test")
+
+    class MismatchRobot:
+        is_connected = True
+
+        def get_observation(self) -> dict[str, float]:
+            return {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS}
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            returned = dict(action)
+            returned["left_joint_1.pos"] += 0.5
+            return returned
+
+    class FullTeleop:
+        is_connected = True
+
+        def get_action(self) -> dict[str, float]:
+            return {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS}
+
+    controller.robot = MismatchRobot()
+    controller.teleop = FullTeleop()
+    controller.dataset = FakeRecordingDataset()
+    controller.recording = True
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: obs
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    for _ in range(3):
+        controller._control_step()
+
+    assert "persistent_driver_command_mismatch" in controller.current_contamination_reasons
+    assert controller.current_command_validation["mismatch_frames"] == 3
+    assert controller.current_command_validation["max_abs_error"] == pytest.approx(0.5)
+    assert controller.current_command_validation["affected_joints"] == ["left_joint_1.pos"]
+    assert controller.current_command_validation["max_consecutive_mismatch_frames"] == 3
+    assert controller.current_command_validation["action_spike_frames"] == 0
+    assert controller.current_command_validation["nonfinite_action_frames"] == 0
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "sessions" / "mismatch-test" / "events.jsonl").read_text().splitlines()
+    ]
+    assert [event["event"] for event in events].count("episode_contaminated") == 1
+
+
+def test_persistent_follower_tracking_error_contaminates_without_rewriting_command(
+    tmp_path: Path,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="tracking-test")
+    controller.recording = True
+    target = {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS}
+    qpos = dict(target)
+    previous = dict(target)
+    target["left_joint_1.pos"] = 12.0
+    previous["left_joint_1.pos"] = 12.0
+    result = controller.safety_processor.process(
+        follower_target=target,
+        follower_qpos=qpos,
+        previous_effective=previous,
+        dt_s=1 / 30,
+    )
+
+    for _ in range(3):
+        controller._track_follower_tracking(result)
+
+    assert result.command["left_joint_1.pos"] == 12.0
+    assert "persistent_follower_tracking_error" in controller.current_contamination_reasons
+    assert "follower_tracking_error" in controller.current_dq_reasons
+    assert controller.current_tracking_validation == {
+        "warning_frames": 3,
+        "contamination_frames": 3,
+        "freeze_frames": 0,
+        "max_abs_error": pytest.approx(12.0),
+        "affected_joints": ["left_joint_1.pos"],
+        "max_consecutive_contamination_frames": 3,
+    }
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "sessions" / "tracking-test" / "events.jsonl").read_text().splitlines()
+    ]
+    assert [event["event"] for event in events].count("follower_tracking_warning") == 1
+
+
+def test_tracking_freeze_sends_hold_stops_episode_and_locks_collection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="freeze-test")
+    dataset = FakeRecordingDataset()
+
+    class FreezeRobot:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.sent_actions: list[dict[str, float]] = []
+
+        def get_observation(self) -> dict[str, float]:
+            obs = {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS}
+            obs["right_joint_4.pos"] = -1.0
+            return obs
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            self.sent_actions.append(dict(action))
+            return dict(action)
+
+    class FreezeTeleop:
+        is_connected = True
+
+        def get_action(self) -> dict[str, float]:
+            action = {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS}
+            action["right_joint_4.pos"] = 30.0
+            return action
+
+    robot = FreezeRobot()
+    controller.robot = robot
+    controller.teleop = FreezeTeleop()
+    controller.dataset = dataset
+    controller.recording = True
+    controller.last_effective_command = {
+        key: (25.0 if key == "right_joint_4.pos" else 0.0) for key in EXPECTED_FOLLOWER_ACTION_KEYS
+    }
+    controller.last_effective_time_ns = time.monotonic_ns()
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: obs
+    stopped: list[bool] = []
+
+    def stop_episode(*, auto_stopped_by_safety: bool = False) -> dict:
+        stopped.append(True)
+        assert auto_stopped_by_safety is True
+        controller.recording = False
+        return {"ok": True}
+
+    monkeypatch.setattr(controller, "stop_episode", stop_episode)
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    controller._control_step()
+
+    assert robot.sent_actions[-1]["right_joint_4.pos"] == 0.0
+    assert stopped == [True]
+    assert controller.safety_frozen is True
+    assert controller.state == "frozen"
+    assert controller.ready_state == "invalid"
+    assert controller.sync_state == "invalid"
+    assert controller.dry_teleop_enabled is False
+    status = controller.get_status()
+    assert status["control"]["freeze_reason"] == "follower_tracking_freeze"
+    assert "Follower tracking error" in status["control"]["freeze_message"]
+    assert status["episode"]["auto_stopped_by_safety"] is True
+    assert status["episode"]["auto_stop_save_status"] == "saved"
+    assert "follower_tracking_freeze" in controller.current_contamination_reasons
+    assert dataset.frames == []
+    with pytest.raises(RuntimeError, match="frozen"):
+        controller.start_episode("blocked")
+    with pytest.raises(RuntimeError, match="frozen"):
+        controller.switch_dataset(root=str(tmp_path / "other"), repo_id="local/other")
+
+
+def test_tracking_freeze_save_failure_enters_frozen_error(tmp_path: Path, monkeypatch) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="freeze-error-test")
+    controller.recording = True
+    controller.ready_state = "verified"
+    controller.sync_state = "valid"
+    controller.dry_teleop_enabled = True
+
+    def stop_episode(*, auto_stopped_by_safety: bool = False) -> dict:
+        assert auto_stopped_by_safety is True
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(controller, "stop_episode", stop_episode)
+    controller._enter_safety_freeze("follower_tracking_freeze", "Follower tracking error triggered safety freeze")
+
+    status = controller.get_status()
+    assert controller.state == "frozen_error"
+    assert controller.recording is False
+    assert controller.safety_frozen is True
+    assert controller.ready_state == "invalid"
+    assert controller.sync_state == "invalid"
+    assert status["episode"]["auto_stopped_by_safety"] is True
+    assert status["episode"]["auto_stop_save_status"] == "failed"
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "sessions" / "freeze-error-test" / "events.jsonl").read_text().splitlines()
+    ]
+    assert [event["event"] for event in events].count("tracking_freeze_save_failed") == 1
+
+
+def test_stop_episode_persists_safety_metadata_and_blocks_unverified_acceptance(
+    tmp_path: Path,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={
+            "id": "teleop",
+            "mode": "absolute_passthrough",
+            "apply_openarm_mini_compat_mapping": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": True,
+        },
+        cameras={},
+        control={},
+        safety=make_safety_settings(verified=False),
+    )
+    controller = WorkbenchController(settings, session_id="safety-metadata-test")
+    fake_dataset = FakeDataset()
+    controller.dataset = fake_dataset
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-24T00:00:00+08:00"
+    controller.current_frame_count = 3
+    controller.current_record_start = 1.0
+    controller.current_contamination_reasons = {"safety_config_unverified"}
+    controller.ready_state = "verified"
+    controller.latest_ready_result = {"ok": True, "path": "config/ready_path.json", "max_abs_error": 0.5}
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    labeled = controller.label_episode("success")
+
+    record = labeled["record"]
+    assert record["safety_config_version"] == "test_safety_v1"
+    assert record["safety_config_verified"] is False
+    assert record["hard_limits"]["left_gripper.pos"] == [-65.0, 0.0]
+    assert record["tracking_error_warning"]["left_joint_1.pos"] == 5.0
+    assert record["tracking_error_contamination"]["left_joint_1.pos"] == 10.0
+    assert record["tracking_error_freeze"]["left_joint_1.pos"] == 20.0
+    assert record["tracking_error_persistence_frames"] == 3
+    assert record["command_validation"]["mismatch_frames"] == 0
+    assert record["tracking_validation"]["warning_frames"] == 0
+    assert record["ready_state"] == "verified"
+    assert record["ready_result"]["path"] == "config/ready_path.json"
+    assert record["contaminated"] is True
+    assert record["contamination_reasons"] == ["safety_config_unverified"]
+    assert record["dq_status"] == "fail"
+    assert record["dq_reasons"] == ["safety_config_unverified"]
+    assert "safety_config_unverified" in record["acceptance_reasons"]
+    assert record["accepted"] is False
+
+
+def test_stop_episode_dq_fails_when_required_camera_is_missing(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={
+            "id": "teleop",
+            "mode": "relative_joint_offset",
+            "apply_openarm_mini_compat_mapping": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": True,
+        },
+        cameras={"main": {"type": "opencv"}, "wrist_left": {"type": "opencv"}},
+        control={"camera_timeout_s": 0.1},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="dq-camera-test")
+    controller.dataset = FakeDataset()
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-26T09:00:00+08:00"
+    controller.current_frame_count = 30
+    controller.current_record_start = time.perf_counter() - 1.0
+    controller.ready_state = "verified"
+    controller.sync_state = "valid"
+    controller.frame_cache["main"]["timestamp"] = time.time()
+    controller.frame_cache["wrist_left"]["timestamp"] = None
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    labeled = controller.label_episode("success")
+
+    record = labeled["record"]
+    assert record["dq_status"] == "fail"
+    assert "camera_missing:wrist_left" in record["dq_reasons"]
+    assert record["accepted"] is False
+
+
+def test_stop_episode_dq_fails_short_and_slow_episode(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={
+            "id": "teleop",
+            "mode": "relative_joint_offset",
+            "apply_openarm_mini_compat_mapping": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": True,
+        },
+        cameras={},
+        control={"min_episode_frames": 10, "min_control_fps_ratio": 0.8},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="dq-short-slow-test")
+    controller.dataset = FakeDataset()
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-26T09:00:00+08:00"
+    controller.current_frame_count = 3
+    controller.current_record_start = time.perf_counter() - 2.0
+    controller.ready_state = "verified"
+    controller.sync_state = "valid"
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    labeled = controller.label_episode("success")
+
+    record = labeled["record"]
+    assert record["dq_status"] == "fail"
+    assert "episode_too_short:3<10" in record["dq_reasons"]
+    assert "control_fps_too_low" in record["dq_reasons"]
+    assert record["accepted"] is False
+
+
+def test_control_step_dq_tracks_action_spike_and_nonfinite_action(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={"action_spike_threshold": 5.0},
+    )
+    controller = WorkbenchController(settings, session_id="dq-action-spike-test")
+
+    class SpikeRobot:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.sent: list[dict[str, float]] = []
+
+        def get_observation(self) -> dict[str, float]:
+            return {"joint.pos": 0.0}
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            self.sent.append(dict(action))
+            return dict(action)
+
+    class SpikeTeleop:
+        is_connected = True
+        index = 0
+
+        def get_action(self) -> dict[str, float]:
+            self.index += 1
+            if self.index == 1:
+                return {"joint.pos": 0.0}
+            if self.index == 2:
+                return {"joint.pos": 20.0}
+            return {"joint.pos": float("nan")}
+
+    controller.robot = SpikeRobot()
+    controller.teleop = SpikeTeleop()
+    controller.dataset = FakeRecordingDataset()
+    controller.recording = True
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: dict(obs)
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    controller._control_step()
+    controller._control_step()
+    controller._control_step()
+
+    assert controller.current_command_validation["action_spike_frames"] == 1
+    assert controller.current_command_validation["nonfinite_action_frames"] == 1
+    assert "action_spike" in controller.current_dq_reasons
+    assert "nonfinite_action" in controller.current_dq_reasons
+
+
+def test_stop_episode_dq_fails_missing_verified_safety_metadata(tmp_path: Path) -> None:
+    incomplete_safety = make_safety_settings()
+    object.__setattr__(incomplete_safety, "verified_by", "")
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={
+            "id": "teleop",
+            "mode": "relative_joint_offset",
+            "apply_openarm_mini_compat_mapping": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": True,
+        },
+        cameras={},
+        control={},
+        safety=incomplete_safety,
+    )
+    controller = WorkbenchController(settings, session_id="dq-metadata-test")
+    controller.dataset = FakeDataset()
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-26T09:00:00+08:00"
+    controller.current_frame_count = 30
+    controller.current_record_start = time.perf_counter() - 1.0
+    controller.ready_state = "verified"
+    controller.sync_state = "valid"
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    labeled = controller.label_episode("success")
+
+    record = labeled["record"]
+    assert record["dq_status"] == "fail"
+    assert "metadata_incomplete:verified_by" in record["dq_reasons"]
+    assert record["accepted"] is False
+
+
+def test_stop_episode_writes_timing_sidecar_and_summary(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={"default_task": "test task"},
+    )
+    controller = WorkbenchController(settings, session_id="timing-sidecar-test")
+    controller.dataset = FakeDataset()
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-26T10:00:00+08:00"
+    controller.current_frame_count = 2
+    controller.current_record_start = time.perf_counter() - 1.0
+    controller.current_sync_valid_at_record_start = True
+    controller.current_sync_state_at_record_start = "valid"
+    controller.current_sync_result_at_record_start = {"ok": True, "state": "valid"}
+    controller.current_timing_events = [
+        {
+            "frame_index": 0,
+            "control_step_start_time_ns": 100_000_000,
+            "follower_obs_time_ns": 110_000_000,
+            "master_read_time_ns": 120_000_000,
+            "action_send_time_ns": 140_000_000,
+            "control_step_end_time_ns": 150_000_000,
+        },
+        {
+            "frame_index": 1,
+            "control_step_start_time_ns": 200_000_000,
+            "follower_obs_time_ns": 210_000_000,
+            "master_read_time_ns": 220_000_000,
+            "action_send_time_ns": 260_000_000,
+            "control_step_end_time_ns": 280_000_000,
+        },
+    ]
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    record = controller.dataset_manifest.read_episodes()[0]
+
+    sidecar = tmp_path / "sessions" / "timing-sidecar-test" / "timing_episode_000000.json"
+    payload = json.loads(sidecar.read_text())
+    assert record["timing_summary"]["event_count"] == 2
+    assert record["timing_summary"]["target_period_ms"] == 33.333
+    assert record["timing_sidecar"] == "timing_episode_000000.json"
+    assert record["sync_valid_at_record_start"] is True
+    assert record["sync_state_at_record_start"] == "valid"
+    assert record["sync_result_at_record_start"] == {"ok": True, "state": "valid"}
+    assert payload["summary"] == record["timing_summary"]
+    assert len(payload["events"]) == 2
+
+
+def test_control_step_buffers_timing_event_in_memory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={"main": {"type": "opencv"}},
+        control={"default_task": "test task"},
+    )
+    controller = WorkbenchController(settings, session_id="timing-buffer-test")
+
+    class TimingRobot:
+        is_connected = True
+
+        def get_observation(self) -> dict:
+            return {"joint.pos": 0.0, "main": object()}
+
+        def send_action(self, action: dict) -> dict:
+            return dict(action)
+
+    class TimingTeleop:
+        is_connected = True
+
+        def get_action(self) -> dict:
+            return {"joint.pos": 1.0}
+
+    controller.robot = TimingRobot()
+    controller.teleop = TimingTeleop()
+    controller.dataset = FakeRecordingDataset()
+    controller.recording = True
+    controller.current_task = "test task"
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: dict(obs)
+    monkeypatch.setattr(controller_module, "_encode_jpeg_rgb", lambda frame, quality: b"jpeg")
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    controller._control_step()
+
+    assert len(controller.current_timing_events) == 1
+    event = controller.current_timing_events[0]
+    assert event["frame_index"] == 0
+    assert event["control_step_start_time_ns"] <= event["follower_obs_time_ns"]
+    assert event["follower_obs_time_ns"] <= event["master_read_time_ns"]
+    assert event["master_read_time_ns"] <= event["action_send_time_ns"]
+    assert event["action_send_time_ns"] <= event["control_step_end_time_ns"]
+    assert "main_image_acquire_time_ns" in event
+    assert not list((tmp_path / "sessions" / "timing-buffer-test").glob("timing_episode_*.json"))
+
+
+def test_auto_safety_stop_persists_freeze_metadata_and_blocks_success_acceptance(
+    tmp_path: Path,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="auto-safety-stop-test")
+    fake_dataset = FakeDataset()
+    controller.dataset = fake_dataset
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-25T15:15:44+08:00"
+    controller.current_frame_count = 306
+    controller.current_record_start = 1.0
+    controller.current_contamination_reasons = {
+        "follower_tracking_freeze",
+        "persistent_follower_tracking_error",
+    }
+    controller.current_dq_reasons = {"follower_tracking_error"}
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    stopped = controller.stop_episode(auto_stopped_by_safety=True)
+    labeled = controller.label_episode("success")
+
+    assert stopped["ok"] is True
+    record = labeled["record"]
+    assert record["label"] == "success"
+    assert record["accepted"] is False
+    assert record["auto_stopped_by_safety"] is True
+    assert record["auto_stop_save_status"] == "saved"
+    assert record["contaminated"] is True
+    assert "follower_tracking_freeze" in record["contamination_reasons"]
+    assert "contaminated:follower_tracking_freeze" in record["acceptance_reasons"]
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "sessions" / "auto-safety-stop-test" / "events.jsonl").read_text().splitlines()
+    ]
+    stop_events = [event for event in events if event["event"] == "episode_stop"]
+    assert stop_events[-1]["frame_count"] == 306
+    assert stop_events[-1]["auto_stopped_by_safety"] is True
+
+
+def test_controller_blocks_legacy_unknown_root_before_opening_lerobot_dataset(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    (root / "meta").mkdir(parents=True)
+    (root / "meta" / "info.json").write_text("{}")
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=root,
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="schema-test")
+    controller.robot = type(
+        "FeatureRobot",
+        (),
+        {"action_features": {"joint.pos": float}, "observation_features": {"joint.pos": float}},
+    )()
+
+    with pytest.raises(DatasetSchemaError, match="legacy_unknown"):
+        controller._ensure_dataset()
+
+
+def test_empty_dataset_root_is_removed_before_lerobot_create(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "dataset"
+    root.mkdir()
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=root,
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="empty-root-test")
+    controller.robot = type(
+        "FeatureRobot",
+        (),
+        {
+            "name": "fake_robot",
+            "cameras": {},
+            "action_features": {"joint.pos": float},
+            "observation_features": {"joint.pos": float},
+        },
+    )()
+
+    class FakeDatasetFactory:
+        @staticmethod
+        def create(*args, **kwargs):
+            assert not Path(kwargs["root"]).exists()
+            return object()
+
+    class FakeVideoManager:
+        def __init__(self, dataset):
+            self.dataset = dataset
+
+        def __enter__(self):
+            return self
+
+    monkeypatch.setattr(controller_module, "LeRobotDataset", FakeDatasetFactory)
+    monkeypatch.setattr(controller_module, "VideoEncodingManager", FakeVideoManager)
+
+    controller._ensure_dataset()
+
+    assert (root / "dataset_manifest.json").exists()
+
+
+def test_dataset_status_reports_root_lifecycle_states(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "missing",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="dataset-status-test")
+
+    missing = controller.dataset_status()
+    assert missing["root_state"] == "root_missing"
+    assert missing["can_create"] is True
+
+    empty_root = tmp_path / "empty"
+    empty_root.mkdir()
+    empty = controller.dataset_status(root=empty_root)
+    assert empty["root_state"] == "empty_root"
+    assert empty["can_create"] is True
+
+    legacy_root = tmp_path / "legacy"
+    (legacy_root / "meta").mkdir(parents=True)
+    (legacy_root / "meta" / "info.json").write_text("{}")
+    legacy = controller.dataset_status(root=legacy_root)
+    assert legacy["root_state"] == "legacy_unknown"
+    assert legacy["can_append"] is False
+
+    appendable_root = tmp_path / "appendable"
+    manifest = controller._dataset_manifest_for(
+        root=appendable_root,
+        repo_id="local/appendable",
+    )
+    manifest.ensure_initialized()
+    appendable = controller.dataset_status(root=appendable_root, repo_id="local/appendable")
+    assert appendable["root_state"] == "appendable"
+    assert appendable["can_append"] is True
+
+    mismatch = controller.dataset_status(root=appendable_root, repo_id="local/other")
+    assert mismatch["root_state"] == "semantic_mismatch"
+    assert mismatch["can_append"] is False
+
+
+def test_dataset_new_and_switch_update_runtime_settings_when_idle(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="dataset-api-test")
+    controller.state = "idle"
+
+    created = controller.new_dataset("smoke")
+
+    assert created["ok"] is True
+    assert created["dataset"]["root_state"] == "root_missing"
+    assert controller.settings.dataset.root.name.endswith("smoke")
+
+    target = tmp_path / "switched"
+    switched = controller.switch_dataset(
+        root=str(target),
+        repo_id="local/switched",
+        session_root=str(tmp_path / "switch-sessions"),
+    )
+
+    assert switched["ok"] is True
+    assert switched["dataset"]["root"] == str(target)
+    assert controller.settings.dataset.repo_id == "local/switched"
+    assert controller.settings.session_root == tmp_path / "switch-sessions"
+
+    controller.recording = True
+    with pytest.raises(RuntimeError, match="while recording"):
+        controller.switch_dataset(root=str(tmp_path / "other"), repo_id="local/other")
+
+
+def test_start_episode_requires_verified_ready_when_configured(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={"default_task": "test task"},
+        ready={"require_ready_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="ready-gate-test")
+    controller.state = "idle"
+
+    with pytest.raises(RuntimeError, match="Move to Ready"):
+        controller.start_episode("test task")
+
+
+def test_move_to_ready_marks_ready_verified_and_allows_recording_gate(tmp_path: Path, monkeypatch) -> None:
+    ready_path = tmp_path / "ready_path.json"
+    ready_path.write_text(
+        json.dumps(
+            {
+                "units": "degrees",
+                "waypoints": [
+                    {
+                        "name": "ready",
+                        "duration_s": 0.1,
+                        "action": {"left_joint_1.pos": 1.0, "right_joint_1.pos": -1.0},
+                    }
+                ],
+            }
+        )
+    )
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={"default_task": "test task"},
+        ready={
+            "path": str(ready_path),
+            "fps": 4,
+            "tolerance": 0.01,
+            "settle_time_s": 0.0,
+            "require_ready_for_recording": True,
+        },
+    )
+    controller = WorkbenchController(settings, session_id="ready-move-test")
+    controller.state = "idle"
+
+    class ReadyRobot:
+        name = "fake_robot"
+        action_features = {"left_joint_1.pos": float, "right_joint_1.pos": float}
+
+        def __init__(self) -> None:
+            self.qpos = {"left_joint_1.pos": 0.0, "right_joint_1.pos": 0.0}
+            self.sent = []
+
+        def observe(self):
+            return dict(self.qpos)
+
+        def send_action(self, action):
+            self.sent.append(dict(action))
+            self.qpos.update(action)
+            return dict(action)
+
+    controller.robot = ReadyRobot()
+    monkeypatch.setattr(controller_module.precise_sleep, "__call__", lambda _: None, raising=False)
+
+    result = controller.move_to_ready(sleep=lambda _: None)
+
+    assert result["ok"] is True
+    assert controller.ready_state == "verified"
+    assert controller.latest_ready_result["ok"] is True
+
+
+def test_start_episode_requires_sync_when_configured(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        sync={"require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="sync-gate-test")
+    controller.ready_state = "verified"
+
+    with pytest.raises(RuntimeError, match="Sync Master"):
+        controller.start_episode("test task")
+
+
+def test_move_to_ready_invalidates_existing_sync(tmp_path: Path, monkeypatch) -> None:
+    ready_path = tmp_path / "ready_path.json"
+    ready_path.write_text(
+        json.dumps(
+            {
+                "units": "degrees",
+                "waypoints": [
+                    {
+                        "name": "ready",
+                        "duration_s": 0.1,
+                        "action": {"left_joint_1.pos": 1.0, "right_joint_1.pos": -1.0},
+                    }
+                ],
+            }
+        )
+    )
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        ready={
+            "path": str(ready_path),
+            "fps": 4,
+            "tolerance": 0.01,
+            "settle_time_s": 0.0,
+        },
+        sync={"require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="sync-invalidated-test")
+    controller.state = "idle"
+
+    class ReadyRobot:
+        is_connected = True
+        action_features = {"left_joint_1.pos": float, "right_joint_1.pos": float}
+
+        def __init__(self) -> None:
+            self.qpos = {"left_joint_1.pos": 0.0, "right_joint_1.pos": 0.0}
+
+        def get_observation(self) -> dict[str, float]:
+            return dict(self.qpos)
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            self.qpos.update(action)
+            return dict(action)
+
+    controller.robot = ReadyRobot()
+    controller.sync_state = "valid"
+    controller.latest_sync_result = {"ok": True}
+
+    result = controller.move_to_ready(sleep=lambda _: None)
+
+    assert result["ok"] is True
+    assert controller.ready_state == "verified"
+    assert controller.sync_state == "invalid"
+    assert controller.latest_sync_result is None
+
+
+def test_relative_sync_first_command_stays_at_follower_ready_pose(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        sync={"require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="relative-sync-test")
+    dataset = FakeRecordingDataset()
+
+    class ReadyPoseRobot:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.qpos = {"left_joint_1.pos": 15.0, "right_joint_1.pos": -12.0}
+            self.sent_actions: list[dict[str, float]] = []
+
+        def get_observation(self) -> dict[str, float]:
+            return dict(self.qpos)
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            self.sent_actions.append(dict(action))
+            self.qpos.update(action)
+            return dict(action)
+
+    class OriginMasterTeleop:
+        is_connected = True
+
+        def get_action(self) -> dict[str, float]:
+            return {"left_joint_1.pos": 0.0, "right_joint_1.pos": 0.0}
+
+    robot = ReadyPoseRobot()
+    controller.robot = robot
+    controller.teleop = OriginMasterTeleop()
+    controller.dataset = dataset
+    controller.ready_state = "verified"
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: obs
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    sync_result = controller.sync_master()
+    controller.recording = True
+    controller._control_step()
+
+    assert sync_result["ok"] is True
+    assert controller.sync_state == "valid"
+    assert robot.sent_actions == [{"left_joint_1.pos": 15.0, "right_joint_1.pos": -12.0}]
+    assert dataset.frames[0]["action"] == {"left_joint_1.pos": 15.0, "right_joint_1.pos": -12.0}
+
+
+def test_sync_master_uses_configured_multi_sample_median(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        sync={"samples": 3, "sample_interval_s": 0.0, "require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="multi-sample-sync-test")
+
+    class NoisyReadyRobot:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.samples = [
+                {"left_joint_1.pos": 10.0, "right_joint_1.pos": -10.0},
+                {"left_joint_1.pos": 100.0, "right_joint_1.pos": -100.0},
+                {"left_joint_1.pos": 12.0, "right_joint_1.pos": -12.0},
+            ]
+            self.index = 0
+
+        def get_observation(self) -> dict[str, float]:
+            sample = self.samples[self.index]
+            self.index += 1
+            return dict(sample)
+
+    class NoisyMasterTeleop:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.samples = [
+                {"left_joint_1.pos": 1.0, "right_joint_1.pos": -1.0},
+                {"left_joint_1.pos": 50.0, "right_joint_1.pos": -50.0},
+                {"left_joint_1.pos": 3.0, "right_joint_1.pos": -3.0},
+            ]
+            self.index = 0
+
+        def get_action(self) -> dict[str, float]:
+            sample = self.samples[self.index]
+            self.index += 1
+            return dict(sample)
+
+    robot = NoisyReadyRobot()
+    teleop = NoisyMasterTeleop()
+    controller.robot = robot
+    controller.teleop = teleop
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: dict(obs)
+
+    result = controller.sync_master()
+
+    sync = result["sync"]
+    assert sync["sample_count"] == 3
+    assert sync["follower_start"] == {"left_joint_1.pos": 12.0, "right_joint_1.pos": -12.0}
+    assert sync["follower_target_start"] == {"left_joint_1.pos": 3.0, "right_joint_1.pos": -3.0}
+    assert sync["offsets"] == {"left_joint_1.pos": 9.0, "right_joint_1.pos": -9.0}
+    assert controller.sync_offsets == sync["offsets"]
+
+
+def test_sync_master_can_sync_left_and_right_arms_independently(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        sync={"samples": 1, "require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="independent-sync-test")
+
+    class TwoArmRobot:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.qpos = {"left_joint_1.pos": 10.0, "right_joint_1.pos": -20.0}
+
+        def get_observation(self) -> dict[str, float]:
+            return dict(self.qpos)
+
+    class TwoArmTeleop:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.action = {"left_joint_1.pos": 1.0, "right_joint_1.pos": -2.0}
+
+        def get_action(self) -> dict[str, float]:
+            return dict(self.action)
+
+    robot = TwoArmRobot()
+    teleop = TwoArmTeleop()
+    controller.robot = robot
+    controller.teleop = teleop
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: dict(obs)
+
+    left = controller.sync_master(arm="left")["sync"]
+
+    assert left["arm"] == "left"
+    assert left["synced_arms"] == ["left"]
+    assert left["state"] == "partial"
+    assert controller.sync_state == "partial"
+    assert controller.sync_offsets == {"left_joint_1.pos": 9.0}
+
+    robot.qpos = {"left_joint_1.pos": 100.0, "right_joint_1.pos": -30.0}
+    teleop.action = {"left_joint_1.pos": 100.0, "right_joint_1.pos": -3.0}
+    right = controller.sync_master(arm="right")["sync"]
+
+    assert right["arm"] == "right"
+    assert right["synced_arms"] == ["left", "right"]
+    assert right["state"] == "valid"
+    assert controller.sync_state == "valid"
+    assert controller.sync_offsets == {"left_joint_1.pos": 9.0, "right_joint_1.pos": -27.0}
+
+
+def test_relative_sync_applies_per_joint_gain_and_deadband(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        sync={
+            "samples": 1,
+            "require_sync_for_recording": True,
+            "gains": {"left_joint_1.pos": 2.0, "right_joint_1.pos": 0.5},
+            "deadband": {"left_joint_1.pos": 0.2, "right_joint_1.pos": 0.2},
+        },
+    )
+    controller = WorkbenchController(settings, session_id="relative-gain-deadband-test")
+    controller.sync_state = "valid"
+    controller.sync_arms = {"left", "right"}
+    controller.sync_offsets = {"left_joint_1.pos": 9.0, "right_joint_1.pos": -18.0}
+    controller.sync_calibration = {
+        "follower_start": {"left_joint_1.pos": 10.0, "right_joint_1.pos": -20.0},
+        "follower_target_start": {"left_joint_1.pos": 1.0, "right_joint_1.pos": -2.0},
+    }
+
+    synced = controller._apply_sync_to_follower_target(
+        {"left_joint_1.pos": 1.1, "right_joint_1.pos": 0.0}
+    )
+
+    assert synced == {"left_joint_1.pos": 10.0, "right_joint_1.pos": -19.0}
+    assert controller.latest_relative_result == {
+        "left_joint_1.pos": {
+            "raw_target": 1.1,
+            "target_start": 1.0,
+            "follower_start": 10.0,
+            "delta": 0.0,
+            "gain": 2.0,
+            "deadband": 0.2,
+            "command": 10.0,
+        },
+        "right_joint_1.pos": {
+            "raw_target": 0.0,
+            "target_start": -2.0,
+            "follower_start": -20.0,
+            "delta": 2.0,
+            "gain": 0.5,
+            "deadband": 0.2,
+            "command": -19.0,
+        },
+    }
+
+
+def test_sync_master_during_recording_contaminates_episode(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        sync={"require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="resync-contaminates-test")
+    controller.recording = True
+    controller.current_episode_index = 3
+
+    with pytest.raises(RuntimeError, match="cannot Sync Master while recording"):
+        controller.sync_master()
+
+    assert "relative_resync_during_recording" in controller.current_contamination_reasons
+    events = [json.loads(line) for line in controller.manifest.events_path.read_text().splitlines()]
+    assert any(
+        event["event"] == "episode_contaminated"
+        and event["reason"] == "relative_resync_during_recording"
+        for event in events
+    )
+
+
+def test_enable_dry_teleop_requires_ready_and_sync_then_sends_without_recording(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        ready={"require_ready_for_recording": True},
+        sync={"require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="dry-teleop-test")
+    dataset = FakeRecordingDataset()
+
+    class DryRobot:
+        is_connected = True
+
+        def __init__(self) -> None:
+            self.qpos = {"left_joint_1.pos": 15.0, "right_joint_1.pos": -12.0}
+            self.sent_actions: list[dict[str, float]] = []
+
+        def get_observation(self) -> dict[str, float]:
+            return dict(self.qpos)
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            self.sent_actions.append(dict(action))
+            self.qpos.update(action)
+            return dict(action)
+
+    class DryTeleop:
+        is_connected = True
+        calls = 0
+
+        def get_action(self) -> dict[str, float]:
+            self.calls += 1
+            if self.calls == 1:
+                return {"left_joint_1.pos": 1.0, "right_joint_1.pos": -1.0}
+            return {"left_joint_1.pos": 2.0, "right_joint_1.pos": -2.0}
+
+    robot = DryRobot()
+    controller.robot = robot
+    controller.teleop = DryTeleop()
+    controller.dataset = dataset
+    controller.teleop_action_processor = lambda pair: dict(pair[0])
+    controller.robot_action_processor = lambda pair: dict(pair[0])
+    controller.robot_observation_processor = lambda obs: obs
+    monkeypatch.setattr(
+        controller_module,
+        "build_dataset_frame",
+        lambda features, values, prefix: {prefix: dict(values)},
+    )
+
+    with pytest.raises(RuntimeError, match="Move to Ready"):
+        controller.enable_teleop()
+
+    controller.ready_state = "verified"
+    with pytest.raises(RuntimeError, match="Sync Master"):
+        controller.enable_teleop()
+
+    controller.sync_master()
+    result = controller.enable_teleop()
+    controller._control_step()
+
+    assert result["ok"] is True
+    assert controller.dry_teleop_enabled is True
+    assert robot.sent_actions == [{"left_joint_1.pos": 16.0, "right_joint_1.pos": -13.0}]
+    assert dataset.frames == []
+
+
+def test_start_episode_after_dry_teleop_keeps_valid_sync_and_disables_dry_teleop(
+    tmp_path: Path,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "relative_joint_offset"},
+        cameras={},
+        control={"default_task": "test task"},
+        ready={"require_ready_for_recording": True},
+        sync={"require_sync_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="start-after-dry-teleop")
+    controller.state = "idle"
+    controller.ready_state = "verified"
+    controller.sync_state = "valid"
+    controller.sync_offsets = {"left_joint_1.pos": 1.0}
+    controller.latest_sync_result = {"ok": True, "state": "valid"}
+    controller.dry_teleop_enabled = True
+    controller._ensure_dataset = lambda: setattr(controller, "dataset", type("Dataset", (), {"num_episodes": 0})())
+
+    result = controller.start_episode("test task")
+
+    assert result == {"ok": True, "episode_index": 0}
+    assert controller.recording is True
+    assert controller.dry_teleop_enabled is False
+    assert controller.sync_state == "valid"
+
+
+def test_dataset_action_features_are_aggregated_with_robot_action_processor(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="feature-test")
+    controller.robot = type(
+        "FeatureRobot",
+        (),
+        {
+            "name": "fake_robot",
+            "cameras": {},
+            "action_features": {"joint.pos": float},
+            "observation_features": {"joint.pos": float},
+        },
+    )()
+    controller.robot_action_processor = object()
+    controller.robot_observation_processor = object()
+    aggregate_calls: list[object] = []
+    created: dict = {}
+
+    def aggregate(*, pipeline, initial_features, use_videos):
+        aggregate_calls.append(pipeline)
+        key = "action" if pipeline is controller.robot_action_processor else "observation.state"
+        return {key: {"dtype": "float32", "shape": (1,), "names": ["joint.pos"]}}
+
+    class FakeDatasetFactory:
+        @staticmethod
+        def create(*args, **kwargs):
+            created.update(kwargs)
+            return object()
+
+    class FakeVideoManager:
+        def __init__(self, dataset):
+            self.dataset = dataset
+
+        def __enter__(self):
+            return self
+
+    monkeypatch.setattr(controller_module, "aggregate_pipeline_dataset_features", aggregate)
+    monkeypatch.setattr(
+        controller_module,
+        "create_initial_features",
+        lambda **kwargs: kwargs,
+    )
+    monkeypatch.setattr(
+        controller_module,
+        "combine_feature_dicts",
+        lambda *feature_sets: {key: value for features in feature_sets for key, value in features.items()},
+    )
+    monkeypatch.setattr(controller_module, "LeRobotDataset", FakeDatasetFactory)
+    monkeypatch.setattr(controller_module, "VideoEncodingManager", FakeVideoManager)
+
+    controller._ensure_dataset()
+
+    assert aggregate_calls == [controller.robot_action_processor, controller.robot_observation_processor]
+    assert created["features"]["action"]["dtype"] == "float32"

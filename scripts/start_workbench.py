@@ -25,13 +25,14 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8090)
     parser.add_argument("--session-id", default=None)
+    parser.add_argument("--task-profile", default=None)
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    settings = load_settings(args.config)
+    settings = load_settings(args.config, task_profile=args.task_profile)
     controller = WorkbenchController(settings, session_id=args.session_id)
 
     def stop(_signum, _frame) -> None:
