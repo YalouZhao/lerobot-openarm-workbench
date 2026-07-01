@@ -47,6 +47,7 @@ class EpisodeRecord:
     verified_by: str = ""
     verified_at: str = ""
     verification_basis: str = ""
+    safety_action_keys: list[str] = field(default_factory=list)
     hard_limits: dict[str, list[float]] = field(default_factory=dict)
     soft_limits: dict[str, list[float]] = field(default_factory=dict)
     deadband: dict[str, float] = field(default_factory=dict)

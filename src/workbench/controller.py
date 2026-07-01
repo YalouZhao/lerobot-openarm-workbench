@@ -20,7 +20,10 @@ from lerobot.robots import make_robot_from_config
 from lerobot.robots.bi_openarm_follower.config_bi_openarm_follower import BiOpenArmFollowerConfig
 from lerobot.robots.openarm_follower.config_openarm_follower import OpenArmFollowerConfigBase
 from lerobot.teleoperators import make_teleoperator_from_config
-from lerobot.teleoperators.openarm_mini.config_openarm_mini import OpenArmMiniConfig
+try:
+    from lerobot.teleoperators.openarm_mini.config_openarm_mini import OpenArmMiniConfig
+except ImportError:  # pragma: no cover - depends on installed LeRobot robot set.
+    OpenArmMiniConfig = None
 from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.robot_utils import precise_sleep
 
@@ -371,6 +374,7 @@ class WorkbenchController:
                     verified_by=str(safety_metadata.get("verified_by", "")),
                     verified_at=str(safety_metadata.get("verified_at", "")),
                     verification_basis=str(safety_metadata.get("verification_basis", "")),
+                    safety_action_keys=list(safety_metadata.get("safety_action_keys", [])),
                     hard_limits=dict(safety_metadata.get("hard_limits", {})),
                     soft_limits=dict(safety_metadata.get("soft_limits", {})),
                     deadband=dict(safety_metadata.get("deadband", {})),
@@ -1002,25 +1006,40 @@ class WorkbenchController:
 
     def _connect_devices_once(self) -> None:
         cameras = {name: _make_camera_config(cfg) for name, cfg in self.settings.cameras.items()}
-        robot_cfg, camera_aliases = make_bi_openarm_configuration(
-            BiOpenArmFollowerConfig,
-            OpenArmFollowerConfigBase,
-            robot_id=self.settings.robot["id"],
-            left_arm={
-                "port": self.settings.robot["left_arm"]["port"],
-                "side": self.settings.robot["left_arm"].get("side"),
-            },
-            right_arm={
-                "port": self.settings.robot["right_arm"]["port"],
-                "side": self.settings.robot["right_arm"].get("side"),
-            },
-            cameras=cameras,
-        )
-        teleop_cfg = OpenArmMiniConfig(
-            id=self.settings.teleop["id"],
-            port_right=self.settings.teleop["port_right"],
-            port_left=self.settings.teleop["port_left"],
-        )
+        robot_type = str(self.settings.robot.get("type", "bi_openarm_follower"))
+        teleop_type = str(self.settings.teleop.get("type", "openarm_mini"))
+        if robot_type == "bi_so_follower":
+            robot_cfg, camera_aliases = self._make_bi_so_robot_configuration(cameras)
+        elif robot_type == "bi_openarm_follower":
+            robot_cfg, camera_aliases = make_bi_openarm_configuration(
+                BiOpenArmFollowerConfig,
+                OpenArmFollowerConfigBase,
+                robot_id=self.settings.robot["id"],
+                left_arm={
+                    "port": self.settings.robot["left_arm"]["port"],
+                    "side": self.settings.robot["left_arm"].get("side"),
+                },
+                right_arm={
+                    "port": self.settings.robot["right_arm"]["port"],
+                    "side": self.settings.robot["right_arm"].get("side"),
+                },
+                cameras=cameras,
+            )
+        else:
+            raise ValueError(f"Unsupported robot type: {robot_type}")
+
+        if teleop_type == "bi_so_leader":
+            teleop_cfg = self._make_bi_so_teleop_configuration()
+        elif teleop_type == "openarm_mini":
+            if OpenArmMiniConfig is None:
+                raise RuntimeError("installed LeRobot does not provide OpenArmMiniConfig")
+            teleop_cfg = OpenArmMiniConfig(
+                id=self.settings.teleop["id"],
+                port_right=self.settings.teleop["port_right"],
+                port_left=self.settings.teleop["port_left"],
+            )
+        else:
+            raise ValueError(f"Unsupported teleop type: {teleop_type}")
 
         self.robot = adapt_bi_openarm_camera_keys(make_robot_from_config(robot_cfg), camera_aliases)
         self.teleop = make_teleoperator_from_config(teleop_cfg)
@@ -1046,14 +1065,70 @@ class WorkbenchController:
         self.message = "ready"
         self.manifest.event("info", "devices_connected", "Robot, teleop, and cameras connected")
 
+    def _make_bi_so_robot_configuration(self, cameras: Mapping[str, Any]) -> tuple[Any, dict[str, str]]:
+        from lerobot.robots.bi_so_follower.config_bi_so_follower import BiSOFollowerConfig
+        from lerobot.robots.so_follower.config_so_follower import SOFollowerConfig
+
+        left_cameras = {name: cfg for name, cfg in cameras.items() if name != "wrist_right"}
+        right_cameras = {name: cfg for name, cfg in cameras.items() if name == "wrist_right"}
+        common = {
+            "disable_torque_on_disconnect": bool(
+                self.settings.robot.get("disable_torque_on_disconnect", True)
+            ),
+            "max_relative_target": self.settings.robot.get("max_relative_target"),
+            "use_degrees": bool(self.settings.robot.get("use_degrees", False)),
+        }
+        robot_cfg = BiSOFollowerConfig(
+            id=self.settings.robot.get("id"),
+            left_arm_config=SOFollowerConfig(
+                port=self.settings.robot["left_arm"]["port"],
+                cameras=left_cameras,
+                **common,
+            ),
+            right_arm_config=SOFollowerConfig(
+                port=self.settings.robot["right_arm"]["port"],
+                cameras=right_cameras,
+                **common,
+            ),
+        )
+        aliases = {
+            **{f"left_{name}": name for name in left_cameras},
+            **{f"right_{name}": name for name in right_cameras},
+        }
+        return robot_cfg, aliases
+
+    def _make_bi_so_teleop_configuration(self) -> Any:
+        from lerobot.teleoperators.bi_so_leader.config_bi_so_leader import BiSOLeaderConfig
+        from lerobot.teleoperators.so_leader.config_so_leader import SOLeaderConfig
+
+        return BiSOLeaderConfig(
+            id=self.settings.teleop.get("id"),
+            left_arm_config=SOLeaderConfig(
+                port=self.settings.teleop["left_arm"]["port"],
+                use_degrees=bool(self.settings.teleop.get("use_degrees", False)),
+            ),
+            right_arm_config=SOLeaderConfig(
+                port=self.settings.teleop["right_arm"]["port"],
+                use_degrees=bool(self.settings.teleop.get("use_degrees", False)),
+            ),
+        )
+
     def _assert_existing_calibration_cache(self) -> None:
         missing: list[str] = []
         for name in ("left_arm", "right_arm"):
             arm = getattr(self.robot, name, None)
             if arm is not None and not getattr(arm, "calibration", None):
                 missing.append(f"robot.{name}")
-        if self.teleop is not None and not getattr(self.teleop, "calibration", None):
-            missing.append("teleop.openarm_mini")
+        if self.teleop is not None:
+            teleop_arms = [
+                (name, getattr(self.teleop, name, None)) for name in ("left_arm", "right_arm")
+            ]
+            if any(arm is not None for _, arm in teleop_arms):
+                for name, arm in teleop_arms:
+                    if arm is not None and not getattr(arm, "calibration", None):
+                        missing.append(f"teleop.{name}")
+            elif hasattr(self.teleop, "calibration") and not getattr(self.teleop, "calibration", None):
+                missing.append("teleop")
         if missing:
             joined = ", ".join(missing)
             raise RuntimeError(

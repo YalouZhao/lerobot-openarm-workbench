@@ -10,6 +10,7 @@ from .safety import SafetySettings, parse_safety_settings
 
 LEGACY_DATASET_SCHEMA = "openarm_workbench_v1_legacy"
 V2_DATASET_SCHEMA = "openarm_workbench_v2"
+XLEROBOT_SO101_DATASET_SCHEMA = "xlerobot_so101_workbench_v1"
 LEGACY_ACTION_SEMANTICS = "master_absolute_legacy"
 V2_ACTION_SEMANTICS = "follower_effective_command"
 LEGACY_TELEOP_MODE = "absolute_legacy"
@@ -31,6 +32,7 @@ def validate_semantic_configuration(
         (LEGACY_DATASET_SCHEMA, LEGACY_ACTION_SEMANTICS, LEGACY_TELEOP_MODE),
         (V2_DATASET_SCHEMA, V2_ACTION_SEMANTICS, ABSOLUTE_PASSTHROUGH_MODE),
         (V2_DATASET_SCHEMA, V2_ACTION_SEMANTICS, RELATIVE_JOINT_MODE),
+        (XLEROBOT_SO101_DATASET_SCHEMA, V2_ACTION_SEMANTICS, RELATIVE_JOINT_MODE),
     }
     combination = (dataset_schema_version, action_semantics, teleop_mode)
     if combination not in valid_combinations:

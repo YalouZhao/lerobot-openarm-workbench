@@ -19,6 +19,11 @@ class OpenArmMiniCompatibilityMapper:
         mapping_version: str,
         native_mapping_detected: bool,
     ) -> None:
+        if not apply_mapping and mapping_version != OPENARM_MINI_COMPAT_VERSION:
+            self.apply_mapping = False
+            self.mapping_version = mapping_version
+            self.native_mapping_detected = native_mapping_detected
+            return
         if apply_mapping and mapping_version != OPENARM_MINI_COMPAT_VERSION:
             raise ValueError(
                 "compat_mapping_version must be "

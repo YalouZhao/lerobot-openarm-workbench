@@ -103,6 +103,56 @@ def test_loads_explicit_v2_semantics(tmp_path: Path) -> None:
     assert settings.sync["require_sync_for_recording"] is False
 
 
+def test_loads_xlerobot_so101_candidate_semantics(tmp_path: Path) -> None:
+    payload = config_payload()
+    so101_keys = [
+        f"{side}_{joint}.pos"
+        for side in ("left", "right")
+        for joint in (
+            "shoulder_pan",
+            "shoulder_lift",
+            "elbow_flex",
+            "wrist_flex",
+            "wrist_roll",
+            "gripper",
+        )
+    ]
+    payload["dataset"]["dataset_schema_version"] = "xlerobot_so101_workbench_v1"
+    payload["dataset"]["root"] = "/tmp/xlerobot/dataset"
+    payload["teleop"]["mode"] = "relative_joint_offset"
+    payload["teleop"]["apply_openarm_mini_compat_mapping"] = False
+    payload["teleop"]["compat_mapping_version"] = "so101_leader_to_xlerobot_follower_v1_candidate"
+    payload["teleop"]["compat_mapping_verified"] = False
+    payload["safety"]["safety_config_version"] = "xlerobot_so101_safety_v1_candidate"
+    payload["safety"]["safety_config_verified"] = False
+    payload["safety"]["action_keys"] = so101_keys
+    payload["safety"]["joints"] = {
+        key: {
+            "hard_limit": [0.0, 100.0] if key.endswith("gripper.pos") else [-100.0, 100.0],
+            "soft_limit": [0.0, 100.0] if key.endswith("gripper.pos") else [-100.0, 100.0],
+            "deadband": 0.0,
+            "max_step": 10.0,
+            "max_velocity": 100.0,
+            "tracking_error_warning": 10.0,
+            "tracking_error_contamination": 20.0,
+            "tracking_error_freeze": 40.0,
+        }
+        for key in so101_keys
+    }
+
+    settings = load_settings(write_config(tmp_path, payload))
+
+    assert settings.dataset.dataset_schema_version == "xlerobot_so101_workbench_v1"
+    assert settings.dataset.action_semantics == "follower_effective_command"
+    assert settings.teleop_mode == "relative_joint_offset"
+    assert settings.apply_openarm_mini_compat_mapping is False
+    assert settings.compat_mapping_version == "so101_leader_to_xlerobot_follower_v1_candidate"
+    assert settings.compat_mapping_verified is False
+    assert settings.safety.safety_config_version == "xlerobot_so101_safety_v1_candidate"
+    assert settings.safety.safety_config_verified is False
+    assert settings.safety.action_keys == tuple(so101_keys)
+
+
 def test_v2_json_config_requires_safety_section(tmp_path: Path) -> None:
     payload = config_payload()
     del payload["safety"]
@@ -137,6 +187,7 @@ def test_json_config_requires_semantic_fields(tmp_path: Path, missing_path: tupl
         ("openarm_workbench_v1_legacy", "follower_effective_command", "absolute_legacy"),
         ("openarm_workbench_v2", "master_absolute_legacy", "absolute_passthrough"),
         ("openarm_workbench_v2", "follower_effective_command", "absolute_legacy"),
+        ("xlerobot_so101_workbench_v1", "follower_effective_command", "absolute_passthrough"),
         ("unknown", "follower_effective_command", "absolute_passthrough"),
     ],
 )

@@ -46,6 +46,7 @@ def test_parse_safety_settings_freezes_complete_metadata() -> None:
     settings = parse_safety_settings(safety_payload())
 
     metadata = settings.to_metadata()
+    assert metadata["safety_action_keys"] == list(EXPECTED_FOLLOWER_ACTION_KEYS)
     assert metadata["safety_config_version"] == "test_safety_v1"
     assert metadata["safety_config_verified"] is True
     assert metadata["verified_by"] == "hardware_operator"
@@ -61,6 +62,55 @@ def test_parse_safety_settings_freezes_complete_metadata() -> None:
 
     with pytest.raises(TypeError):
         settings.joints["left_gripper.pos"] = settings.joints["right_gripper.pos"]  # type: ignore[index]
+
+
+def test_parse_safety_settings_accepts_so101_action_keys() -> None:
+    keys = tuple(
+        f"{side}_{joint}.pos"
+        for side in ("left", "right")
+        for joint in (
+            "shoulder_pan",
+            "shoulder_lift",
+            "elbow_flex",
+            "wrist_flex",
+            "wrist_roll",
+            "gripper",
+        )
+    )
+    payload = safety_payload()
+    payload["safety_config_version"] = "xlerobot_so101_safety_v1_candidate"
+    payload["safety_config_verified"] = False
+    payload.pop("verified_by")
+    payload.pop("verified_at")
+    payload.pop("verification_basis")
+    payload["action_keys"] = list(keys)
+    payload["joints"] = {
+        key: {
+            "hard_limit": [0.0, 100.0] if key.endswith("gripper.pos") else [-100.0, 100.0],
+            "soft_limit": [0.0, 100.0] if key.endswith("gripper.pos") else [-100.0, 100.0],
+            "deadband": 0.0,
+            "max_step": 10.0,
+            "max_velocity": 100.0,
+            "tracking_error_warning": 5.0,
+            "tracking_error_contamination": 10.0,
+            "tracking_error_freeze": 20.0,
+        }
+        for key in keys
+    }
+
+    settings = parse_safety_settings(payload)
+    processor = FollowerSafetyProcessor(settings)
+    result = processor.process(
+        follower_target={key: 150.0 for key in keys},
+        follower_qpos={key: 0.0 for key in keys},
+        previous_effective=None,
+        dt_s=1 / 30,
+    )
+
+    assert settings.action_keys == keys
+    assert tuple(result.command) == keys
+    assert result.command["left_gripper.pos"] == 100.0 / 30.0
+    assert result.command["left_shoulder_pan.pos"] == 100.0 / 30.0
 
 
 @pytest.mark.parametrize(

@@ -61,18 +61,21 @@ class SafetySettings:
     verified_by: str | None
     verified_at: str | None
     verification_basis: str | None
+    action_keys: tuple[str, ...]
     joints: Mapping[str, JointSafetyLimits]
     driver_mismatch_atol: float
     mismatch_contamination_frames: int
     tracking_error_persistence_frames: int
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "action_keys", tuple(self.action_keys))
         object.__setattr__(self, "joints", MappingProxyType(dict(self.joints)))
 
     def to_metadata(self) -> dict[str, Any]:
         metadata = {
             "safety_config_version": self.safety_config_version,
             "safety_config_verified": self.safety_config_verified,
+            "safety_action_keys": list(self.action_keys),
             "hard_limits": {key: list(limits.hard_limit) for key, limits in self.joints.items()},
             "soft_limits": {key: list(limits.soft_limit) for key, limits in self.joints.items()},
             "deadband": {key: limits.deadband for key, limits in self.joints.items()},
@@ -107,10 +110,20 @@ def parse_safety_settings(payload: Mapping[str, Any]) -> SafetySettings:
     if not version:
         raise ValueError("safety_config_version must be non-empty")
 
+    raw_action_keys = payload.get("action_keys", EXPECTED_FOLLOWER_ACTION_KEYS)
+    if not isinstance(raw_action_keys, (list, tuple)) or not raw_action_keys:
+        raise ValueError("safety action_keys must be a non-empty list")
+    action_keys = tuple(str(key) for key in raw_action_keys)
+    if len(set(action_keys)) != len(action_keys):
+        raise ValueError("safety action_keys must not contain duplicates")
+    for key in action_keys:
+        if not key.endswith(".pos"):
+            raise ValueError(f"safety action key must end with '.pos': {key}")
+
     raw_joints = payload.get("joints")
     if not isinstance(raw_joints, Mapping):
         raise ValueError("safety joints must be a mapping")
-    expected = set(EXPECTED_FOLLOWER_ACTION_KEYS)
+    expected = set(action_keys)
     actual = set(raw_joints)
     missing = sorted(expected - actual)
     extra = sorted(actual - expected)
@@ -120,7 +133,7 @@ def parse_safety_settings(payload: Mapping[str, Any]) -> SafetySettings:
         raise ValueError(f"unexpected safety joints: {extra}")
 
     joints: dict[str, JointSafetyLimits] = {}
-    for key in EXPECTED_FOLLOWER_ACTION_KEYS:
+    for key in action_keys:
         raw = raw_joints[key]
         if not isinstance(raw, Mapping):
             raise ValueError(f"safety joint {key} must be a mapping")
@@ -197,6 +210,7 @@ def parse_safety_settings(payload: Mapping[str, Any]) -> SafetySettings:
         verified_by=verified_by,
         verified_at=verified_at,
         verification_basis=verification_basis,
+        action_keys=action_keys,
         joints=joints,
         driver_mismatch_atol=mismatch_atol,
         mismatch_contamination_frames=contamination_frames,
@@ -239,7 +253,8 @@ class FollowerSafetyProcessor:
         previous_effective: Mapping[str, Any] | None,
         dt_s: float,
     ) -> SafetyResult:
-        expected = set(EXPECTED_FOLLOWER_ACTION_KEYS)
+        expected_keys = self.settings.action_keys
+        expected = set(expected_keys)
         target_keys = set(follower_target)
         if target_keys != expected:
             raise ValueError(
@@ -260,7 +275,7 @@ class FollowerSafetyProcessor:
         tracking_errors: dict[str, float] = {}
         tracking_levels: dict[str, str] = {}
         events: list[dict[str, Any]] = []
-        for key in EXPECTED_FOLLOWER_ACTION_KEYS:
+        for key in expected_keys:
             limits = self.settings.joints[key]
             current = _finite_number(follower_qpos[key], f"follower_qpos[{key}]")
             current_qpos[key] = current
@@ -311,7 +326,7 @@ class FollowerSafetyProcessor:
 
         freeze_requested = "freeze" in tracking_levels.values()
         if freeze_requested:
-            for key in EXPECTED_FOLLOWER_ACTION_KEYS:
+            for key in expected_keys:
                 candidates[key] = self._record_change(
                     events,
                     "tracking_freeze_hold",
@@ -321,7 +336,7 @@ class FollowerSafetyProcessor:
                 )
 
         command: dict[str, float] = {}
-        for key in EXPECTED_FOLLOWER_ACTION_KEYS:
+        for key in expected_keys:
             command[key] = self._clamp_stage(
                 events,
                 "hard_limit",

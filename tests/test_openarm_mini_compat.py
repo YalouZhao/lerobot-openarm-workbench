@@ -68,3 +68,13 @@ def test_unknown_mapping_version_is_rejected() -> None:
             mapping_version="unknown",
             native_mapping_detected=False,
         )
+
+
+def test_non_openarm_candidate_mapping_can_pass_through() -> None:
+    mapper = OpenArmMiniCompatibilityMapper(
+        apply_mapping=False,
+        mapping_version="so101_leader_to_xlerobot_follower_v1_candidate",
+        native_mapping_detected=False,
+    )
+
+    assert mapper.map_action({"left_shoulder_pan.pos": 1.5}) == {"left_shoulder_pan.pos": 1.5}
