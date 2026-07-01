@@ -38,6 +38,27 @@ XLEROBOT_SO101_ACTION_NAMES = (
 )
 XLEROBOT_SO101_STATE_NAMES = XLEROBOT_SO101_ACTION_NAMES
 XLEROBOT_SO101_CAMERA_KEYS = ("main", "wrist_left", "wrist_right")
+XLEROBOT_SO101_PROFILE_METADATA_FIELDS = (
+    "robot_profile_id",
+    "robot_family",
+    "robot_model",
+    "robot_driver",
+    "teleop_driver",
+    "action_schema_version",
+    "state_schema_version",
+    "camera_schema_version",
+    "action_dim",
+    "state_dim",
+    "action_names",
+    "state_names",
+    "action_units",
+    "state_units",
+    "control_mode",
+    "action_space",
+    "camera_keys",
+    "ready_required_for_collection",
+    "sync_required_for_collection",
+)
 
 
 def is_xlerobot_so101_schema(dataset_schema_version: str) -> bool:
@@ -155,6 +176,51 @@ def xlerobot_so101_contract_metadata(
         ),
     }
     return metadata
+
+
+def xlerobot_so101_profile_metadata(settings: Any) -> dict[str, Any]:
+    metadata = xlerobot_so101_semantic_metadata(settings)
+    for key in (
+        "dataset_schema_version",
+        "action_semantics",
+        "compat_mapping_version",
+        "safety_config_version",
+    ):
+        metadata.pop(key, None)
+    return metadata
+
+
+def expected_xlerobot_so101_profile_metadata() -> dict[str, Any]:
+    return {
+        "robot_profile_id": XLEROBOT_SO101_PROFILE_ID,
+        "robot_family": XLEROBOT_SO101_ROBOT_FAMILY,
+        "robot_model": XLEROBOT_SO101_ROBOT_MODEL,
+        "robot_driver": XLEROBOT_SO101_ROBOT_DRIVER,
+        "teleop_driver": XLEROBOT_SO101_TELEOP_DRIVER,
+        "action_schema_version": XLEROBOT_SO101_ACTION_SCHEMA_VERSION,
+        "state_schema_version": XLEROBOT_SO101_STATE_SCHEMA_VERSION,
+        "camera_schema_version": XLEROBOT_SO101_CAMERA_SCHEMA_VERSION,
+        "action_dim": len(XLEROBOT_SO101_ACTION_NAMES),
+        "state_dim": len(XLEROBOT_SO101_STATE_NAMES),
+        "action_names": list(XLEROBOT_SO101_ACTION_NAMES),
+        "state_names": list(XLEROBOT_SO101_STATE_NAMES),
+        "action_units": XLEROBOT_SO101_ACTION_UNITS,
+        "state_units": XLEROBOT_SO101_STATE_UNITS,
+        "control_mode": XLEROBOT_SO101_CONTROL_MODE,
+        "action_space": XLEROBOT_SO101_ACTION_SPACE,
+        "camera_keys": list(XLEROBOT_SO101_CAMERA_KEYS),
+        "ready_required_for_collection": True,
+        "sync_required_for_collection": True,
+    }
+
+
+def validate_xlerobot_so101_manifest_metadata(manifest: Mapping[str, Any]) -> None:
+    for field, expected_value in expected_xlerobot_so101_profile_metadata().items():
+        actual = manifest.get(field)
+        if actual != expected_value:
+            raise ValueError(
+                f"xlerobot_so101 manifest {field} must be {expected_value!r}, got {actual!r}"
+            )
 
 
 class _ContractSafety:

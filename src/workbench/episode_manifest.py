@@ -32,6 +32,25 @@ class EpisodeRecord:
     fps: float
     save_duration_s: float
     cameras: dict[str, str]
+    robot_profile_id: str = ""
+    robot_family: str = ""
+    robot_model: str = ""
+    robot_driver: str = ""
+    teleop_driver: str = ""
+    action_schema_version: str = ""
+    state_schema_version: str = ""
+    camera_schema_version: str = ""
+    action_dim: int = 0
+    state_dim: int = 0
+    action_names: list[str] = field(default_factory=list)
+    state_names: list[str] = field(default_factory=list)
+    action_units: str = ""
+    state_units: str = ""
+    control_mode: str = ""
+    action_space: str = ""
+    camera_keys: list[str] = field(default_factory=list)
+    ready_required_for_collection: bool = False
+    sync_required_for_collection: bool = False
     dataset_schema_version: str = V2_DATASET_SCHEMA
     action_semantics: str = V2_ACTION_SEMANTICS
     teleop_mode: str = ABSOLUTE_PASSTHROUGH_MODE

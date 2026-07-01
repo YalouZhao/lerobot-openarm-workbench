@@ -53,6 +53,7 @@ from .ready_controller import ReadyController, ReadySettings
 from .safety import FollowerSafetyProcessor, SafetyResult
 from .timing import summarize_timing_events, write_timing_sidecar
 from .training_export import export_training_package
+from .xlerobot_profile import is_xlerobot_so101_schema, xlerobot_so101_profile_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +358,7 @@ class WorkbenchController:
                     fps=fps,
                     save_duration_s=self.last_save_duration_s,
                     cameras=camera_labels,
+                    **self._profile_episode_metadata(),
                     dataset_schema_version=self.settings.dataset.dataset_schema_version,
                     action_semantics=self.settings.dataset.action_semantics,
                     teleop_mode=self.settings.teleop_mode,
@@ -1300,11 +1302,12 @@ class WorkbenchController:
             compat_mapping_version=self.settings.compat_mapping_version,
             compat_mapping_verified=self.settings.compat_mapping_verified,
             safety_metadata=(self.settings.safety.to_metadata() if self.settings.safety is not None else None),
+            profile_metadata=self._profile_episode_metadata(),
         )
 
     def _dataset_semantic_summary(self) -> dict[str, Any]:
         safety_metadata = self.settings.safety.to_metadata() if self.settings.safety is not None else {}
-        return {
+        summary = {
             "dataset_schema_version": self.settings.dataset.dataset_schema_version,
             "action_semantics": self.settings.dataset.action_semantics,
             "teleop_mode": self.settings.teleop_mode,
@@ -1314,6 +1317,13 @@ class WorkbenchController:
             "safety_config_version": safety_metadata.get("safety_config_version"),
             "safety_config_verified": safety_metadata.get("safety_config_verified"),
         }
+        summary.update(self._profile_episode_metadata())
+        return summary
+
+    def _profile_episode_metadata(self) -> dict[str, Any]:
+        if is_xlerobot_so101_schema(self.settings.dataset.dataset_schema_version):
+            return xlerobot_so101_profile_metadata(self.settings)
+        return {}
 
     def _ready_required_for_recording(self) -> bool:
         return bool(self.settings.ready.get("require_ready_for_recording", False))

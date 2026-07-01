@@ -185,6 +185,7 @@ class CanonicalDatasetManifest:
         compat_mapping_version: str = "openarm_mini_818892a3",
         compat_mapping_verified: bool = True,
         safety_metadata: Mapping[str, Any] | None = None,
+        profile_metadata: Mapping[str, Any] | None = None,
     ) -> None:
         self.dataset_root = dataset_root
         self.dataset_name = dataset_name
@@ -206,6 +207,7 @@ class CanonicalDatasetManifest:
         self.compat_mapping_version = compat_mapping_version
         self.compat_mapping_verified = compat_mapping_verified
         self.safety_metadata = dict(safety_metadata) if safety_metadata is not None else None
+        self.profile_metadata = dict(profile_metadata) if profile_metadata is not None else None
         self.dataset_manifest_path = dataset_root / "dataset_manifest.json"
         self.episodes_path = dataset_root / "episodes.jsonl"
         self.accepted_episodes_path = dataset_root / "accepted_episodes.json"
@@ -308,6 +310,7 @@ class CanonicalDatasetManifest:
                 "compat_mapping_applied": self.compat_mapping_applied,
                 "compat_mapping_version": self.compat_mapping_version,
                 "compat_mapping_verified": self.compat_mapping_verified,
+                **(self.profile_metadata or {}),
                 **(self.safety_metadata or {}),
                 "created_at": now,
                 "updated_at": now,
@@ -424,6 +427,8 @@ class CanonicalDatasetManifest:
         }
         if self.safety_metadata is not None:
             expected.update(self.safety_metadata)
+        if self.profile_metadata is not None:
+            expected.update(self.profile_metadata)
         return expected
 
     def _validate_existing_semantics(self, payload: dict[str, Any]) -> None:
