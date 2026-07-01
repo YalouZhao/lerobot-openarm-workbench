@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from .safety import SafetySettings, parse_safety_settings
+from .xlerobot_profile import (
+    canonical_xlerobot_so101_dataset_fields,
+    is_xlerobot_so101_schema,
+    validate_xlerobot_so101_config_payload,
+)
 
 
 LEGACY_DATASET_SCHEMA = "openarm_workbench_v1_legacy"
@@ -56,6 +61,15 @@ class DatasetSettings:
     dataset_schema_version: str = V2_DATASET_SCHEMA
     action_semantics: str = V2_ACTION_SEMANTICS
     command_frame_version: int = COMMAND_FRAME_VERSION
+    action_schema_version: str = ""
+    state_schema_version: str = ""
+    camera_schema_version: str = ""
+    action_dim: int | None = None
+    state_dim: int | None = None
+    action_units: str = ""
+    state_units: str = ""
+    action_names: tuple[str, ...] = ()
+    state_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -70,6 +84,7 @@ class WorkbenchSettings:
     ready: dict[str, Any] = field(default_factory=dict)
     sync: dict[str, Any] = field(default_factory=dict)
     safety: SafetySettings | None = None
+    robot_profile_id: str | None = None
 
     @property
     def teleop_mode(self) -> str:
@@ -108,6 +123,8 @@ def load_settings(path: str | Path, *, task_profile: str | Path | None = None) -
         bool(teleop["compat_mapping_verified"])
     except KeyError as exc:
         raise ValueError(f"missing required semantic configuration: {exc.args[0]}") from exc
+    if is_xlerobot_so101_schema(dataset_schema_version):
+        validate_xlerobot_so101_config_payload(data)
     validate_semantic_configuration(
         dataset_schema_version=dataset_schema_version,
         action_semantics=action_semantics,
@@ -119,7 +136,11 @@ def load_settings(path: str | Path, *, task_profile: str | Path | None = None) -
             "compat_mapping_version must be 'openarm_mini_818892a3' when "
             "apply_openarm_mini_compat_mapping=true"
         )
+    canonical_dataset_fields: dict[str, Any] = {}
+    if is_xlerobot_so101_schema(dataset_schema_version):
+        canonical_dataset_fields = canonical_xlerobot_so101_dataset_fields()
     return WorkbenchSettings(
+        robot_profile_id=(str(data["robot_profile_id"]) if data.get("robot_profile_id") else None),
         workspace_root=Path(data["workspace_root"]).expanduser(),
         session_root=Path(data["session_root"]).expanduser(),
         dataset=DatasetSettings(
@@ -140,6 +161,40 @@ def load_settings(path: str | Path, *, task_profile: str | Path | None = None) -
             dataset_schema_version=dataset_schema_version,
             action_semantics=action_semantics,
             command_frame_version=command_frame_version,
+            action_schema_version=str(
+                dataset.get(
+                    "action_schema_version",
+                    canonical_dataset_fields.get("action_schema_version", ""),
+                )
+            ),
+            state_schema_version=str(
+                dataset.get(
+                    "state_schema_version",
+                    canonical_dataset_fields.get("state_schema_version", ""),
+                )
+            ),
+            camera_schema_version=str(
+                dataset.get(
+                    "camera_schema_version",
+                    canonical_dataset_fields.get("camera_schema_version", ""),
+                )
+            ),
+            action_dim=(
+                int(dataset["action_dim"])
+                if "action_dim" in dataset
+                else canonical_dataset_fields.get("action_dim")
+            ),
+            state_dim=(
+                int(dataset["state_dim"])
+                if "state_dim" in dataset
+                else canonical_dataset_fields.get("state_dim")
+            ),
+            action_units=str(
+                dataset.get("action_units", canonical_dataset_fields.get("action_units", ""))
+            ),
+            state_units=str(dataset.get("state_units", canonical_dataset_fields.get("state_units", ""))),
+            action_names=tuple(dataset.get("action_names", canonical_dataset_fields.get("action_names", ()))),
+            state_names=tuple(dataset.get("state_names", canonical_dataset_fields.get("state_names", ()))),
         ),
         robot=dict(data["robot"]),
         teleop=teleop,

@@ -259,8 +259,10 @@ def _create_output_dataset(
 ):
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
+    from .lerobot_compat import create_lerobot_dataset
+
     source_dataset = LeRobotDataset(source_repo_id, root=source_root)
-    output_dataset = LeRobotDataset.create(
+    output_dataset = create_lerobot_dataset(
         output_repo_id,
         fps=int(source_dataset.fps),
         features=source_dataset.features,

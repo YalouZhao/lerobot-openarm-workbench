@@ -1,0 +1,20 @@
+{
+  "robot_profile_id": "xlerobot_so101_dual_v1",
+  "action_units": "normalized_lerobot_motor_units",
+  "action_keys": [
+    "left_shoulder_pan.pos",
+    "left_shoulder_lift.pos",
+    "left_elbow_flex.pos",
+    "left_wrist_flex.pos",
+    "left_wrist_roll.pos",
+    "left_gripper.pos",
+    "right_shoulder_pan.pos",
+    "right_shoulder_lift.pos",
+    "right_elbow_flex.pos",
+    "right_wrist_flex.pos",
+    "right_wrist_roll.pos",
+    "right_gripper.pos"
+  ],
+  "waypoints": [],
+  "notes": "Placeholder only. Record a real ready path before collection."
+}
