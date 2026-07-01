@@ -190,7 +190,7 @@ def _validate_source_manifest(manifest: Mapping[str, Any]) -> None:
             "action_semantics": V2_ACTION_SEMANTICS,
             "teleop_mode": RELATIVE_JOINT_MODE,
             "command_frame_version": COMMAND_FRAME_VERSION,
-            "compat_mapping_applied": False,
+            "compat_mapping_applied": True,
             "compat_mapping_verified": True,
             "safety_config_verified": True,
         }

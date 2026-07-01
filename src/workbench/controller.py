@@ -54,6 +54,7 @@ from .safety import FollowerSafetyProcessor, SafetyResult
 from .timing import summarize_timing_events, write_timing_sidecar
 from .training_export import export_training_package
 from .xlerobot_profile import is_xlerobot_so101_schema, xlerobot_so101_profile_metadata
+from .xlerobot_mapping import XLeRobotSO101CompatibilityMapper
 
 logger = logging.getLogger(__name__)
 
@@ -109,11 +110,16 @@ class WorkbenchController:
         self.settings = settings
         self.lerobot_revision = detect_lerobot_revision()
         self.native_compat_mapping = lerobot_applies_compat_mapping_natively()
-        self.compat_mapper = OpenArmMiniCompatibilityMapper(
-            apply_mapping=settings.apply_openarm_mini_compat_mapping,
-            mapping_version=settings.compat_mapping_version,
-            native_mapping_detected=self.native_compat_mapping,
-        )
+        if is_xlerobot_so101_schema(settings.dataset.dataset_schema_version):
+            self.compat_mapper = XLeRobotSO101CompatibilityMapper(
+                mapping_version=settings.compat_mapping_version,
+            )
+        else:
+            self.compat_mapper = OpenArmMiniCompatibilityMapper(
+                apply_mapping=settings.apply_openarm_mini_compat_mapping,
+                mapping_version=settings.compat_mapping_version,
+                native_mapping_detected=self.native_compat_mapping,
+            )
         self.safety_processor = (
             FollowerSafetyProcessor(settings.safety) if settings.safety is not None else None
         )
@@ -131,7 +137,7 @@ class WorkbenchController:
             teleop_mode=settings.teleop_mode,
             command_frame_version=settings.dataset.command_frame_version,
             lerobot_revision=self.lerobot_revision,
-            compat_mapping_applied=(settings.apply_openarm_mini_compat_mapping or self.native_compat_mapping),
+            compat_mapping_applied=self._compat_mapping_applied(),
             compat_mapping_version=settings.compat_mapping_version,
             compat_mapping_verified=settings.compat_mapping_verified,
             safety_metadata=(settings.safety.to_metadata() if settings.safety is not None else None),
@@ -364,9 +370,7 @@ class WorkbenchController:
                     teleop_mode=self.settings.teleop_mode,
                     command_frame_version=self.settings.dataset.command_frame_version,
                     lerobot_revision=self.lerobot_revision,
-                    compat_mapping_applied=(
-                        self.settings.apply_openarm_mini_compat_mapping or self.native_compat_mapping
-                    ),
+                    compat_mapping_applied=self._compat_mapping_applied(),
                     compat_mapping_version=self.settings.compat_mapping_version,
                     compat_mapping_verified=self.settings.compat_mapping_verified,
                     contaminated=bool(contamination_reasons),
@@ -554,9 +558,7 @@ class WorkbenchController:
                     "teleop_mode": self.settings.teleop_mode,
                     "command_frame_version": self.settings.dataset.command_frame_version,
                     "lerobot_revision": self.lerobot_revision,
-                    "compat_mapping_applied": (
-                        self.settings.apply_openarm_mini_compat_mapping or self.native_compat_mapping
-                    ),
+                    "compat_mapping_applied": self._compat_mapping_applied(),
                     "compat_mapping_version": self.settings.compat_mapping_version,
                     "compat_mapping_verified": self.settings.compat_mapping_verified,
                 },
@@ -1296,9 +1298,7 @@ class WorkbenchController:
             teleop_mode=self.settings.teleop_mode,
             command_frame_version=self.settings.dataset.command_frame_version,
             lerobot_revision=self.lerobot_revision,
-            compat_mapping_applied=(
-                self.settings.apply_openarm_mini_compat_mapping or self.native_compat_mapping
-            ),
+            compat_mapping_applied=self._compat_mapping_applied(),
             compat_mapping_version=self.settings.compat_mapping_version,
             compat_mapping_verified=self.settings.compat_mapping_verified,
             safety_metadata=(self.settings.safety.to_metadata() if self.settings.safety is not None else None),
@@ -1319,6 +1319,11 @@ class WorkbenchController:
         }
         summary.update(self._profile_episode_metadata())
         return summary
+
+    def _compat_mapping_applied(self) -> bool:
+        if is_xlerobot_so101_schema(self.settings.dataset.dataset_schema_version):
+            return True
+        return bool(self.settings.apply_openarm_mini_compat_mapping or self.native_compat_mapping)
 
     def _profile_episode_metadata(self) -> dict[str, Any]:
         if is_xlerobot_so101_schema(self.settings.dataset.dataset_schema_version):
