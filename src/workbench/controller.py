@@ -145,6 +145,7 @@ class WorkbenchController:
 
         self.lock = threading.RLock()
         self.dataset_lock = threading.RLock()
+        self.device_io_lock = threading.RLock()
         self.stop_event = threading.Event()
         self.loop_thread: threading.Thread | None = None
         self.export_thread: threading.Thread | None = None
@@ -612,7 +613,8 @@ class WorkbenchController:
             self.state = "moving_ready"
             self.message = "moving to ready"
         try:
-            result = ReadyController(self._ready_settings()).move_to_ready(robot, sleep=sleep)
+            with self.device_io_lock:
+                result = ReadyController(self._ready_settings()).move_to_ready(robot, sleep=sleep)
         except Exception as exc:
             with self.lock:
                 self.ready_state = "failed"
@@ -673,9 +675,10 @@ class WorkbenchController:
         obs_samples: list[dict[str, Any]] = []
         target_samples: list[dict[str, Any]] = []
         for sample_index in range(sample_count):
-            obs = robot.get_observation()
+            with self.device_io_lock:
+                obs = robot.get_observation()
+                act = teleop.get_action()
             obs_processed = robot_observation_processor(obs)
-            act = teleop.get_action()
             act_compat = self.compat_mapper.map_action(act)
             act_processed_teleop = teleop_action_processor((act_compat, obs))
             follower_target = robot_action_processor((act_processed_teleop, obs))
@@ -1523,58 +1526,59 @@ class WorkbenchController:
             return
 
         control_step_start_time_ns = time.monotonic_ns()
-        obs = robot.get_observation()
-        follower_obs_time_ns = time.monotonic_ns()
-        obs_processed = self.robot_observation_processor(obs)
-        self._update_preview_frames(obs_processed)
+        with self.device_io_lock:
+            obs = robot.get_observation()
+            follower_obs_time_ns = time.monotonic_ns()
+            obs_processed = self.robot_observation_processor(obs)
+            self._update_preview_frames(obs_processed)
 
-        if not can_teleop:
-            return
+            if not can_teleop:
+                return
 
-        act = teleop.get_action()
-        master_read_time_ns = time.monotonic_ns()
-        act_compat = self.compat_mapper.map_action(act)
-        act_processed_teleop = self.teleop_action_processor((act_compat, obs))
-        robot_action_to_send = self.robot_action_processor((act_processed_teleop, obs))
-        follower_target = self._apply_sync_to_follower_target(robot_action_to_send)
-        now_ns = time.monotonic_ns()
-        safety_result: SafetyResult | None = None
-        previous_effective = self.last_effective_command
-        if self.safety_processor is None:
-            command = CommandFrame.absolute_passthrough(
-                master_action_raw=act,
-                master_action_processed=act_processed_teleop,
-                effective_command=follower_target,
-            )
-            self._track_action_quality(command.effective_command, previous_effective)
-            self.last_effective_command = dict(command.effective_command)
-            self.last_effective_time_ns = now_ns
-        else:
-            dt_s = (
-                1.0 / self.settings.dataset.fps
-                if self.last_effective_time_ns is None
-                else max((now_ns - self.last_effective_time_ns) / 1_000_000_000, 1e-9)
-            )
-            safety_result = self.safety_processor.process(
-                follower_target=follower_target,
-                follower_qpos=obs_processed,
-                previous_effective=self.last_effective_command,
-                dt_s=dt_s,
-            )
-            command = CommandFrame(
-                master_action_raw=act,
-                master_action_processed=act_processed_teleop,
-                relative_target=follower_target,
-                safe_command=safety_result.command,
-                effective_command=safety_result.command,
-                safety_events=safety_result.events,
-            )
-            self._track_action_quality(command.effective_command, previous_effective)
-            self.last_effective_command = dict(command.effective_command)
-            self.last_effective_time_ns = now_ns
-            self._track_follower_tracking(safety_result)
-        send_result = robot.send_action(dict(command.effective_command))
-        action_send_time_ns = time.monotonic_ns()
+            act = teleop.get_action()
+            master_read_time_ns = time.monotonic_ns()
+            act_compat = self.compat_mapper.map_action(act)
+            act_processed_teleop = self.teleop_action_processor((act_compat, obs))
+            robot_action_to_send = self.robot_action_processor((act_processed_teleop, obs))
+            follower_target = self._apply_sync_to_follower_target(robot_action_to_send)
+            now_ns = time.monotonic_ns()
+            safety_result: SafetyResult | None = None
+            previous_effective = self.last_effective_command
+            if self.safety_processor is None:
+                command = CommandFrame.absolute_passthrough(
+                    master_action_raw=act,
+                    master_action_processed=act_processed_teleop,
+                    effective_command=follower_target,
+                )
+                self._track_action_quality(command.effective_command, previous_effective)
+                self.last_effective_command = dict(command.effective_command)
+                self.last_effective_time_ns = now_ns
+            else:
+                dt_s = (
+                    1.0 / self.settings.dataset.fps
+                    if self.last_effective_time_ns is None
+                    else max((now_ns - self.last_effective_time_ns) / 1_000_000_000, 1e-9)
+                )
+                safety_result = self.safety_processor.process(
+                    follower_target=follower_target,
+                    follower_qpos=obs_processed,
+                    previous_effective=self.last_effective_command,
+                    dt_s=dt_s,
+                )
+                command = CommandFrame(
+                    master_action_raw=act,
+                    master_action_processed=act_processed_teleop,
+                    relative_target=follower_target,
+                    safe_command=safety_result.command,
+                    effective_command=safety_result.command,
+                    safety_events=safety_result.events,
+                )
+                self._track_action_quality(command.effective_command, previous_effective)
+                self.last_effective_command = dict(command.effective_command)
+                self.last_effective_time_ns = now_ns
+                self._track_follower_tracking(safety_result)
+            send_result = robot.send_action(dict(command.effective_command))
+            action_send_time_ns = time.monotonic_ns()
         command = command.with_send_result(send_result)
         mismatch_atol = (
             self.settings.safety.driver_mismatch_atol if self.settings.safety is not None else 1e-6

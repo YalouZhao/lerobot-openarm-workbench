@@ -1656,6 +1656,63 @@ def test_move_to_ready_marks_ready_verified_and_allows_recording_gate(tmp_path: 
     assert controller.latest_ready_result["ok"] is True
 
 
+def test_move_to_ready_holds_device_io_lock_while_reading_robot(tmp_path: Path) -> None:
+    ready_path = tmp_path / "ready_path.json"
+    ready_path.write_text(json.dumps({"mode": "current_pose", "waypoints": []}))
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={"default_task": "test task"},
+        ready={"path": str(ready_path), "settle_time_s": 0.0, "require_ready_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="ready-lock-test")
+    controller.state = "idle"
+
+    class TrackingLock:
+        def __init__(self) -> None:
+            self.held = False
+
+        def __enter__(self):
+            self.held = True
+
+        def __exit__(self, exc_type, exc, tb):
+            self.held = False
+
+    tracking_lock = TrackingLock()
+    controller.device_io_lock = tracking_lock
+
+    class LockCheckingRobot:
+        action_features = {"left_joint_1.pos": float, "right_joint_1.pos": float}
+        is_connected = True
+
+        def get_observation(self):
+            assert tracking_lock.held is True
+            return {"left_joint_1.pos": 1.0, "right_joint_1.pos": -1.0}
+
+    controller.robot = LockCheckingRobot()
+
+    result = controller.move_to_ready(sleep=lambda _: None)
+
+    assert result["ok"] is True
+
+
 def test_start_episode_requires_sync_when_configured(tmp_path: Path) -> None:
     settings = WorkbenchSettings(
         workspace_root=tmp_path,
