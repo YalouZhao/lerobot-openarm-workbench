@@ -124,10 +124,11 @@ cd /home/log/lerobot_workbench
 ./run_xlerobot_workbench_8093.sh
 ```
 
-详细 SOP：
+详细 SOP / 使用手册：
 
 ```text
 docs/SOP_XLEROBOT_SO101.md
+docs/SO101_COLLECTION_WORKBENCH_MANUAL.md
 ```
 
 当前 v3 verified 验收产物：
