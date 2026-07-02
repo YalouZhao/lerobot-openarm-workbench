@@ -588,8 +588,8 @@ metadata complete
 当前状态标记：
 
 ```text
-Phase 0 基本完成
-Phase B 部分完成
+Phase A-G 已完成并通过 2026-07-02 SO101 实机 smoke + export 验收
+Phase H Robot Profile UI 后置，不属于 v3 第一阶段
 ```
 
 已完成或已验证：
@@ -602,19 +602,26 @@ robot connected
 teleop connected
 三路 RGB camera connected
 XLeRobot 独立 config / dataset root / session root / export root 已创建
-OpenArm 8091 未受影响
-```
-
-后续必须继续补：
-
-```text
 robot_profile metadata manifest/export/report 全链路写入
 SO101 actual feature keys 打印确认
 send_action clamp / return 行为确认
-mapping candidate TDD
-safety candidate TDD
-ready/sync/dry teleop 实机验收
-short episode + training export validation
+mapping/safety verified config 已落地
+Move to Ready verified
+Sync Master valid left+right
+Dry Teleop enable/disable smoke passed
+short episode dq_status=pass accepted=true
+training export succeeded
+LeRobotDataset loader validation passed
+OpenArm 8091 未受影响
+```
+
+验收产物：
+
+```text
+collection dataset: /home/log/data/xlerobot_so101_v1/dataset
+training export:    /home/log/data/xlerobot_so101_v1/exports/xlerobot_so101_v1_verified_export_20260702
+QA report:          /home/log/data/xlerobot_so101_v1/reports/final_verified_20260702
+static probe:        /home/log/data/xlerobot_so101_v1/reports/xlerobot_so101_probe_20260702.json
 ```
 
 ---
@@ -643,7 +650,7 @@ Phase C：Mapping + Safety TDD
 
 ```text
 so101_leader_to_xlerobot_follower mapping
-xlerobot_so101_safety_v1_candidate
+xlerobot_so101_safety_v1
 hard/soft clamp
 max step
 max velocity

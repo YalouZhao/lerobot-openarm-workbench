@@ -180,3 +180,26 @@ def test_xlerobot_training_export_plan_rejects_openarm_hardcoded_schema(tmp_path
             output_repo_id="local/xlerobot_so101_export",
             dry_run=True,
         )
+
+
+def test_xlerobot_controller_initial_dataset_manifest_includes_profile_metadata(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from workbench.config import load_settings
+    from workbench.controller import WorkbenchController
+
+    settings = load_settings("config/workbench_config.xlerobot_so101.json")
+    settings = replace(
+        settings,
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=replace(settings.dataset, root=tmp_path / "dataset"),
+    )
+
+    controller = WorkbenchController(settings, session_id="profile-init-test")
+    expected = controller.dataset_manifest._expected_semantics()
+
+    assert expected["robot_profile_id"] == XLEROBOT_SO101_PROFILE_ID
+    assert expected["action_schema_version"] == "xlerobot_so101_action_v1"
+    assert expected["action_dim"] == 12
+    assert expected["camera_keys"] == ["main", "wrist_left", "wrist_right"]

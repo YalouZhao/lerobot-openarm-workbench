@@ -212,9 +212,13 @@ def _resolve_timing_sidecar(root: Path, item: Mapping[str, Any], timing_sidecar:
         return direct
     session_id = str(item.get("session_id") or "")
     if session_id:
-        sibling_session = root.parent / f"{root.name}_sessions" / session_id / timing_sidecar
-        if sibling_session.exists():
-            return sibling_session
+        candidates = (
+            root.parent / "sessions" / session_id / timing_sidecar,
+            root.parent / f"{root.name}_sessions" / session_id / timing_sidecar,
+        )
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
     return None
 
 

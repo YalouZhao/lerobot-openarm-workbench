@@ -39,6 +39,7 @@ from .lerobot_compat import (
     build_dataset_frame,
     combine_feature_dicts,
     create_initial_features,
+    create_lerobot_dataset,
     dataset_has_pending_frames,
     adapt_bi_openarm_camera_keys,
     make_bi_openarm_configuration,
@@ -141,6 +142,7 @@ class WorkbenchController:
             compat_mapping_version=settings.compat_mapping_version,
             compat_mapping_verified=settings.compat_mapping_verified,
             safety_metadata=(settings.safety.to_metadata() if settings.safety is not None else None),
+            profile_metadata=self._profile_episode_metadata(),
         )
 
         self.lock = threading.RLock()
@@ -168,6 +170,7 @@ class WorkbenchController:
         self.current_started_at: str | None = None
         self.current_frame_count = 0
         self.current_record_start = 0.0
+        self.current_record_stop = 0.0
         self.last_saved_episode_index: int | None = None
         self.last_save_duration_s: float | None = None
         self.last_reconnect_attempt = 0.0
@@ -264,6 +267,7 @@ class WorkbenchController:
             self.current_started_at = now_iso()
             self.current_frame_count = 0
             self.current_record_start = time.perf_counter()
+            self.current_record_stop = 0.0
             self.last_save_duration_s = None
             self.discard_requested = False
             self.current_contamination_reasons = set()
@@ -298,6 +302,7 @@ class WorkbenchController:
             task = self.current_task
             started_at = self.current_started_at or now_iso()
             frame_count = self.current_frame_count
+            self.current_record_stop = time.perf_counter()
             self.recording = False
             self.state = "saving"
             self.message = "saving episode"
@@ -310,7 +315,10 @@ class WorkbenchController:
                 dataset = self.dataset
                 if dataset is not None and dataset_has_pending_frames(dataset):
                     dataset.save_episode()
-                    self._finalize_dataset()
+                    if self.settings.dataset.finalize_after_each_episode:
+                        self._finalize_dataset()
+                    else:
+                        self._flush_dataset_writers()
                     saved = True
                 else:
                     error = "empty episode buffer"
@@ -554,6 +562,9 @@ class WorkbenchController:
                     "fps": self.settings.dataset.fps,
                     "streaming_encoding": self.settings.dataset.streaming_encoding,
                     "vcodec": self.settings.dataset.vcodec,
+                    "video_encoding_batch_size": self.settings.dataset.video_encoding_batch_size,
+                    "finalize_after_each_episode": self.settings.dataset.finalize_after_each_episode,
+                    "video_encoding_pending_episodes": self._video_encoding_pending_episodes(),
                     "dataset_schema_version": self.settings.dataset.dataset_schema_version,
                     "action_semantics": self.settings.dataset.action_semantics,
                     "teleop_mode": self.settings.teleop_mode,
@@ -926,6 +937,7 @@ class WorkbenchController:
                 "error": "",
             }
         args = {
+            "_finalize_current_dataset": self._should_finalize_before_training_export(source_root),
             "source_root": Path(source_root).expanduser(),
             "source_repo_id": str(source_repo_id),
             "output_root": Path(output_root).expanduser(),
@@ -946,6 +958,9 @@ class WorkbenchController:
 
     def _run_training_export_job(self, job_id: str, args: dict[str, Any]) -> None:
         try:
+            finalize_current_dataset = bool(args.pop("_finalize_current_dataset", False))
+            if finalize_current_dataset:
+                self._finalize_dataset()
             result = export_training_package(**args)
             with self.lock:
                 if self.training_export_job.get("job_id") == job_id:
@@ -971,6 +986,11 @@ class WorkbenchController:
                             "error": f"{type(exc).__name__}: {exc}",
                         }
                     )
+
+    def _should_finalize_before_training_export(self, source_root: str) -> bool:
+        source = Path(source_root).expanduser().resolve()
+        current = self.settings.dataset.root.expanduser().resolve()
+        return source == current and self.dataset is not None
 
     def _assert_export_allowed(self) -> None:
         with self.lock:
@@ -1239,9 +1259,9 @@ class WorkbenchController:
                 **kwargs,
             )
         else:
-            self.dataset = LeRobotDataset.create(
+            self.dataset = create_lerobot_dataset(
                 settings.repo_id,
-                settings.fps,
+                fps=settings.fps,
                 root=settings.root,
                 robot_type=self.robot.name,
                 features=dataset_features,
@@ -1394,10 +1414,71 @@ class WorkbenchController:
         self._invalidate_ready("dataset switched")
         self._invalidate_sync("dataset switched")
 
+    def _flush_dataset_writers(self) -> None:
+        dataset = self.dataset
+        if dataset is None:
+            return
+        close_writer = getattr(dataset, "_close_writer", None)
+        if callable(close_writer):
+            close_writer()
+        meta = getattr(dataset, "meta", None)
+        meta_close_writer = getattr(meta, "_close_writer", None)
+        if callable(meta_close_writer):
+            meta_close_writer()
+
+    def _video_encoding_pending_episodes(self) -> int:
+        dataset = self.dataset
+        if dataset is None:
+            return 0
+        return int(getattr(dataset, "episodes_since_last_encoding", 0) or 0)
+
+    def _refresh_dataset_metadata_before_deferred_video_encoding(self) -> None:
+        dataset = self.dataset
+        if dataset is None:
+            return
+        if int(getattr(dataset, "episodes_since_last_encoding", 0) or 0) <= 0:
+            return
+        meta = getattr(dataset, "meta", None)
+        if meta is None:
+            return
+        meta_close_writer = getattr(meta, "_close_writer", None)
+        if callable(meta_close_writer):
+            meta_close_writer()
+        load_metadata = getattr(meta, "load_metadata", None)
+        if callable(load_metadata):
+            load_metadata()
+
+    def _patch_deferred_video_metadata_lookup(self) -> None:
+        dataset = self.dataset
+        if dataset is None or getattr(dataset, "_workbench_deferred_video_lookup_patch", False):
+            return
+        original = getattr(dataset, "_save_episode_video", None)
+        if not callable(original):
+            return
+
+        def save_episode_video_with_fallback(video_key, episode_index, *args, **kwargs):
+            meta = getattr(dataset, "meta", None)
+            episodes = getattr(meta, "episodes", None) if meta is not None else None
+            video_chunk_key = f"videos/{video_key}/chunk_index"
+            needs_fallback = bool(episodes) and video_chunk_key not in episodes[-1]
+            if not needs_fallback:
+                return original(video_key, episode_index, *args, **kwargs)
+            fallback = [episode for episode in episodes if video_chunk_key in episode]
+            meta.episodes = fallback or None
+            try:
+                return original(video_key, episode_index, *args, **kwargs)
+            finally:
+                meta.episodes = episodes
+
+        dataset._save_episode_video = save_episode_video_with_fallback
+        dataset._workbench_deferred_video_lookup_patch = True
+
     def _finalize_dataset(self) -> None:
         if self.video_manager is not None:
             try:
                 with self.dataset_lock:
+                    self._refresh_dataset_metadata_before_deferred_video_encoding()
+                    self._patch_deferred_video_metadata_lookup()
                     self.video_manager.__exit__(None, None, None)
             finally:
                 self.video_manager = None
@@ -2020,7 +2101,8 @@ class WorkbenchController:
                 item["last_error"] = None
 
     def _episode_fps(self, frame_count: int) -> float:
-        elapsed = max(time.perf_counter() - self.current_record_start, 1e-6)
+        stop = self.current_record_stop or time.perf_counter()
+        elapsed = max(stop - self.current_record_start, 1e-6)
         return round(frame_count / elapsed, 2)
 
     def _episode_dq_hard_gate_reasons(

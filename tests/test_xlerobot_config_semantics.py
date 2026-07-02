@@ -40,6 +40,8 @@ def test_xlerobot_so101_config_loads_with_profile_and_schema_metadata() -> None:
     assert settings.dataset.state_units == "normalized_lerobot_motor_units"
     assert settings.dataset.action_names == XLEROBOT_SO101_ACTION_NAMES
     assert settings.dataset.state_names == XLEROBOT_SO101_ACTION_NAMES
+    assert settings.dataset.video_encoding_batch_size > 1
+    assert settings.dataset.finalize_after_each_episode is False
     assert settings.robot["type"] == "bi_so_follower"
     assert settings.robot["id"] == "xlerobot_follower"
     assert settings.teleop["type"] == "bi_so_leader"

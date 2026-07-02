@@ -14,7 +14,7 @@
     "encoder_queue_maxsize": 30,
     "num_image_writer_processes": 0,
     "num_image_writer_threads_per_camera": 4,
-    "video_encoding_batch_size": 1,
+    "video_encoding_batch_size": 1000,
     "push_to_hub": false,
     "dataset_schema_version": "xlerobot_so101_workbench_v1",
     "action_schema_version": "xlerobot_so101_action_v1",
@@ -23,7 +23,8 @@
     "action_semantics": "follower_effective_command",
     "action_dim": 12,
     "action_units": "normalized_lerobot_motor_units",
-    "command_frame_version": 1
+    "command_frame_version": 1,
+    "finalize_after_each_episode": false
   },
   "robot": {
     "type": "bi_so_follower",
@@ -47,8 +48,8 @@
     "profile_id": "xlerobot_so101_dual_v1",
     "mode": "relative_joint_offset",
     "apply_openarm_mini_compat_mapping": false,
-    "compat_mapping_version": "so101_leader_to_xlerobot_follower_v1_candidate",
-    "compat_mapping_verified": false,
+    "compat_mapping_version": "so101_leader_to_xlerobot_follower_v1",
+    "compat_mapping_verified": true,
     "use_degrees": false,
     "left_arm": {
       "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5AB9066002-if00",
@@ -62,7 +63,7 @@
   "cameras": {
     "main": {
       "type": "opencv",
-      "index_or_path": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:1.2:1.0-video-index0",
+      "index_or_path": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:3.2:1.0-video-index0",
       "width": 640,
       "height": 480,
       "fps": 30,
@@ -91,7 +92,7 @@
   "control": {
     "robot_profile_id": "xlerobot_so101_dual_v1",
     "teleop_when_idle": false,
-    "default_task": "TODO: describe the XLeRobot SO101 collection task before recording.",
+    "default_task": "SO101 v3 verified collection smoke test.",
     "jpeg_quality": 80,
     "camera_timeout_s": 2.0,
     "connect_retries": 2,
@@ -103,8 +104,8 @@
     "action_spike_threshold": 30.0
   },
   "safety": {
-    "safety_config_version": "xlerobot_so101_safety_v1_candidate",
-    "safety_config_verified": false,
+    "safety_config_version": "xlerobot_so101_safety_v1",
+    "safety_config_verified": true,
     "driver_mismatch_atol": 0.0001,
     "mismatch_contamination_frames": 3,
     "tracking_error_persistence_frames": 3,
@@ -315,7 +316,10 @@
         "tracking_error_contamination": 60.0,
         "tracking_error_freeze": 100.0
       }
-    }
+    },
+    "verified_by": "log + Codex hardware validation on so101-log",
+    "verified_at": "2026-07-02T10:10:00+08:00",
+    "verification_basis": "SO101 static feature/driver probe passed; Move to Ready verified max_error=0; Sync Master valid left+right with 12 keys; Dry Teleop enable/disable smoke passed; final verified hardware episode 0 accepted=true with dq_status=pass, driver_mismatch=0, tracking_warning=0, tracking_contamination=0, tracking_freeze=0, action_dim=12, action/state finite, fps=29.94; training export succeeded and LeRobotDataset loader validation passed."
   },
   "ready": {
     "path": "/home/log/lerobot_workbench/config/ready_path_xlerobot_so101.json",

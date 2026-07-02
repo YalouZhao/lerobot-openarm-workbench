@@ -175,3 +175,20 @@ def test_collection_report_script_writes_json_and_markdown(tmp_path: Path) -> No
     assert result.returncode == 0, result.stderr
     assert json.loads((out / "collection_report.json").read_text())["summary"]["exportable_count"] == 1
     assert (out / "collection_report.md").exists()
+
+
+def test_collection_report_resolves_timing_sidecar_from_sibling_sessions_root(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    make_dataset(root)
+    records = [json.loads(line) for line in (root / "episodes.jsonl").read_text().splitlines()]
+    records[0]["session_id"] = "session-a"
+    (root / "timing_episode_000000.json").unlink()
+    session_dir = tmp_path / "sessions" / "session-a"
+    session_dir.mkdir(parents=True)
+    atomic_write_text(session_dir / "timing_episode_000000.json", "{}\n")
+    atomic_write_jsonl(root / "episodes.jsonl", records)
+
+    report = build_collection_report(root=root, repo_id="local/collection")
+
+    assert report["episodes"][0]["timing_sidecar_missing"] is False
+    assert report["timing"]["timing_sidecar_missing_count"] == 1

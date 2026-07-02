@@ -58,6 +58,7 @@ class DatasetSettings:
     num_image_writer_threads_per_camera: int
     video_encoding_batch_size: int
     push_to_hub: bool
+    finalize_after_each_episode: bool = True
     dataset_schema_version: str = V2_DATASET_SCHEMA
     action_semantics: str = V2_ACTION_SEMANTICS
     command_frame_version: int = COMMAND_FRAME_VERSION
@@ -157,6 +158,7 @@ def load_settings(path: str | Path, *, task_profile: str | Path | None = None) -
                 dataset.get("num_image_writer_threads_per_camera", 4)
             ),
             video_encoding_batch_size=int(dataset.get("video_encoding_batch_size", 1)),
+            finalize_after_each_episode=bool(dataset.get("finalize_after_each_episode", True)),
             push_to_hub=bool(dataset.get("push_to_hub", False)),
             dataset_schema_version=dataset_schema_version,
             action_semantics=action_semantics,
