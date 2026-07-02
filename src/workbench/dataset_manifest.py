@@ -27,12 +27,14 @@ SEMANTIC_FIELDS = (
     "compat_mapping_applied",
     "compat_mapping_version",
 )
-SAFETY_SEMANTIC_FIELDS = (
-    "safety_config_version",
-    "safety_config_verified",
+SAFETY_PROVENANCE_FIELDS = (
     "verified_by",
     "verified_at",
     "verification_basis",
+)
+SAFETY_SEMANTIC_FIELDS = (
+    "safety_config_version",
+    "safety_config_verified",
     "hard_limits",
     "soft_limits",
     "deadband",
@@ -426,7 +428,13 @@ class CanonicalDatasetManifest:
             "compat_mapping_version": self.compat_mapping_version,
         }
         if self.safety_metadata is not None:
-            expected.update(self.safety_metadata)
+            expected.update(
+                {
+                    field: value
+                    for field, value in self.safety_metadata.items()
+                    if field not in SAFETY_PROVENANCE_FIELDS
+                }
+            )
         if self.profile_metadata is not None:
             expected.update(self.profile_metadata)
         return expected

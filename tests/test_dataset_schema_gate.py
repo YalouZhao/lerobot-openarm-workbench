@@ -155,6 +155,63 @@ def test_existing_semantic_mismatch_blocks_collection(tmp_path: Path, field: str
         manifest.validate_for_collection()
 
 
+def test_safety_verification_provenance_change_does_not_block_append(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    manifest = make_manifest(root)
+    manifest.ensure_initialized()
+
+    refreshed_safety = safety_metadata()
+    refreshed_safety["verified_by"] = "release_operator"
+    refreshed_safety["verified_at"] = "2026-07-02T14:30:00+08:00"
+    refreshed_safety["verification_basis"] = "same safety config, newer release evidence text"
+
+    CanonicalDatasetManifest(
+        dataset_root=root,
+        dataset_name=root.name,
+        repo_id=f"local/{root.name}",
+        task_text="test task",
+        session_id="session-2",
+        dataset_schema_version="openarm_workbench_v2",
+        action_semantics="follower_effective_command",
+        teleop_mode="absolute_passthrough",
+        command_frame_version=1,
+        lerobot_revision="8fff0fde",
+        compat_mapping_applied=True,
+        compat_mapping_version="openarm_mini_818892a3",
+        compat_mapping_verified=False,
+        safety_metadata=refreshed_safety,
+    ).validate_for_collection()
+
+
+def test_safety_limit_change_still_blocks_append(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    manifest = make_manifest(root)
+    manifest.ensure_initialized()
+
+    changed_safety = safety_metadata()
+    changed_safety["max_step"] = dict(changed_safety["max_step"])
+    changed_safety["max_step"][EXPECTED_FOLLOWER_ACTION_KEYS[0]] = 9.0
+
+    candidate = CanonicalDatasetManifest(
+        dataset_root=root,
+        dataset_name=root.name,
+        repo_id=f"local/{root.name}",
+        task_text="test task",
+        session_id="session-2",
+        dataset_schema_version="openarm_workbench_v2",
+        action_semantics="follower_effective_command",
+        teleop_mode="absolute_passthrough",
+        command_frame_version=1,
+        lerobot_revision="8fff0fde",
+        compat_mapping_applied=True,
+        compat_mapping_version="openarm_mini_818892a3",
+        compat_mapping_verified=False,
+        safety_metadata=changed_safety,
+    )
+    with pytest.raises(DatasetSchemaError, match="max_step"):
+        candidate.validate_for_collection()
+
+
 def test_new_manifest_preserves_manifest_schema_and_writes_dataset_semantics(tmp_path: Path) -> None:
     root = tmp_path / "dataset"
     manifest = make_manifest(root)

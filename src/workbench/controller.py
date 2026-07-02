@@ -537,12 +537,18 @@ class WorkbenchController:
                 timestamp = item.get("timestamp")
                 age_ms = None if timestamp is None else int((now - timestamp) * 1000)
                 ok = bool(timestamp is not None and (now - timestamp) <= self.camera_timeout_s)
+                cfg = self.settings.cameras.get(name, {})
+                width = int(cfg.get("width", 0) or 0)
+                height = int(cfg.get("height", 0) or 0)
                 cameras[name] = {
                     "ok": ok,
                     "fps": round(float(item.get("fps") or 0.0), 2),
                     "frames": int(item.get("frames") or 0),
                     "last_frame_age_ms": age_ms,
                     "last_error": item.get("last_error"),
+                    "width": width or None,
+                    "height": height or None,
+                    "aspect_ratio": round(width / height, 6) if width and height else None,
                 }
             return {
                 "ok": True,

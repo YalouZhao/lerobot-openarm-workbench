@@ -69,20 +69,28 @@ def test_web_removes_deprecated_realsense_reset_control() -> None:
     assert "/api/realsense/reset" not in WEB_SOURCE
 
 
-def test_web_exposes_resizable_camera_windows_without_recreating_streams() -> None:
+def test_web_exposes_camera_layout_presets_without_recreating_streams() -> None:
     assert 'class="camera-board"' in WEB_SOURCE
     assert 'class="camera-splitter row"' in WEB_SOURCE
     assert 'class="camera-splitter col"' in WEB_SOURCE
     assert 'class="camera-size-controls"' in WEB_SOURCE
-    assert 'id="cameraMainSize"' in WEB_SOURCE
-    assert 'id="cameraThumbSize"' in WEB_SOURCE
+    assert 'id="cameraLayoutFitAll"' in WEB_SOURCE
+    assert 'id="cameraLayoutCollect"' in WEB_SOURCE
+    assert 'id="cameraLayoutInspect"' in WEB_SOURCE
+    assert 'id="cameraLayoutScale"' in WEB_SOURCE
+    assert 'id="cameraMainShare"' in WEB_SOURCE
+    assert 'id="cameraWristShare"' in WEB_SOURCE
     assert 'id="cameraWristSplit"' in WEB_SOURCE
-    assert "主窗口高度" in WEB_SOURCE
-    assert "腕部行高" in WEB_SOURCE
-    assert "左右腕宽度" in WEB_SOURCE
-    assert "允许留白" in WEB_SOURCE
-    assert "applyStageSizing" in WEB_SOURCE
-    assert "applyWristSplit" in WEB_SOURCE
+    assert 'id="cameraMainSize"' not in WEB_SOURCE
+    assert 'id="cameraThumbSize"' not in WEB_SOURCE
+    assert "主窗口高度" not in WEB_SOURCE
+    assert "腕部行高" not in WEB_SOURCE
+    assert "左右腕宽度" not in WEB_SOURCE
+    assert "Fit All / Collect" in WEB_SOURCE
+    assert "applyCameraLayout" in WEB_SOURCE
+    assert "setCameraAspect" in WEB_SOURCE
+    assert "imageZoomEnabled" in WEB_SOURCE
+    assert "CameraStage.resetAll" in WEB_SOURCE
     assert "bindSplitter" in WEB_SOURCE
     assert "appendChild(node.wrap)" in WEB_SOURCE
     assert "created once and MOVED" in WEB_SOURCE

@@ -106,6 +106,38 @@ PYCODE
 
 修改后重启 8093。不要把内置摄像头 `/dev/video4` 配进 dataset。
 
+
+### 2A. 相机画面布局与右腕模糊
+
+网页相机布局：
+
+- `Fit All`：默认，一屏完整看三路；
+- `Collect`：采集推荐，主视角更大、腕部仍完整；
+- `Inspect`：检查细节，允许单路滚轮 zoom、拖拽 pan、reset。
+
+`整体缩放 / 主视角占比 / 腕部区域占比 / 左右腕比例` 都是 layout scale，只改变页面 tile 尺寸，不改变采集视频和数据。单路滚轮放大是 image zoom，只用于 UI 检查。
+
+右腕模糊时按顺序：
+
+1. 擦镜头、撕保护膜、检查焦距环/松动/安装距离；
+2. 左右腕交换 USB 口，再必要时交换物理位置；
+3. 查看 v4l2 参数：
+
+```bash
+ls -l /dev/video*
+ls -l /dev/v4l/by-path
+v4l2-ctl -d /dev/video6 --list-ctrls
+v4l2-ctl -d /dev/video6 --all
+```
+
+若支持 focus，现场逐值试，不要固定猜测值：
+
+```bash
+v4l2-ctl -d /dev/video6 -c focus_auto=0
+v4l2-ctl -d /dev/video6 -c focus_absolute=20
+```
+
+
 ## 3. Ready 语义
 
 XLeRobot v3 当前 ready path 是 current-pose 模式：

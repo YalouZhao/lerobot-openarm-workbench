@@ -203,6 +203,60 @@ nano config/workbench_config.xlerobot_so101.json
 
 注意：不要把电脑内置摄像头配置进数据集。改完后重启 8093。
 
+
+
+---
+
+## 5A. 相机视口布局与右腕清晰度诊断
+
+### 5A.1 页面布局模式
+
+相机监控区有三种布局预设：
+
+- `Fit All`：默认模式。三路相机完整显示，目标是在一个浏览器可视高度内看到主视角、左腕、右腕。
+- `Collect`：正式采集推荐模式。主视角稍大，左右腕仍完整显示。
+- `Inspect`：检查细节模式。允许单路画面滚轮 zoom、拖拽 pan、reset view；页面可滚动，不作为默认采集布局。
+
+控件含义：
+
+- `整体缩放`：layout scale，只改变相机 tile 在页面里的尺寸，不改变视频内容、不改变数据。
+- `主视角占比`：控制主视角 tile 在左侧 camera workspace 中的布局占比。
+- `腕部区域占比`：控制两个腕部 tile 所在区域的布局占比。
+- `左右腕比例`：控制左腕和右腕两个 tile 的宽度比例。
+
+注意：视频默认 `object-fit: contain`，保持相机原始宽高比；不拉伸、不裁切。滚轮缩放只属于单个 tile 内部的 image zoom，不等于采集数据缩放。
+
+### 5A.2 右腕模糊排查 SOP
+
+先不要用软件锐化。软件锐化只会改变 UI 观感，不能替代真实相机清晰度，也不应影响训练数据。
+
+按顺序排查：
+
+1. 物理检查：擦镜头、检查保护膜、检查镜头是否松动、检查安装距离；如果是手动对焦镜头，现场调整焦距环。
+2. 对比检查：左右腕相机交换 USB 口；如果还不清楚，再交换左右腕相机物理位置，判断模糊是否跟随相机还是跟随安装位置。
+3. 软件检查：查看 focus / exposure 参数。
+
+命令：
+
+```bash
+ls -l /dev/video*
+ls -l /dev/v4l/by-path
+
+# 假设右腕是 /dev/video6，实际以枚举为准
+v4l2-ctl -d /dev/video6 --list-ctrls
+v4l2-ctl -d /dev/video6 --all
+```
+
+如果支持 focus，才现场试：
+
+```bash
+v4l2-ctl -d /dev/video6 -c focus_auto=0
+v4l2-ctl -d /dev/video6 -c focus_absolute=20
+```
+
+`focus_absolute` 不能拍脑袋固定；每改一次都要回到 UI 观察右腕清晰度变化。
+
+
 ---
 
 ## 6. Ready 位置

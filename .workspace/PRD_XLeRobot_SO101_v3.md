@@ -743,3 +743,149 @@ LeRobotDataset loader validation passed
 README / SOP 更新
 Git commit 完成
 ```
+
+
+---
+
+## 18. Phase UI-1：Camera Viewport Fit & Camera Quality Diagnostics
+
+### 18.1 目标
+
+优化 XLeRobot / SO101 工作台相机显示布局，使三路相机在默认采集状态下一屏完整可见，同时保留单路放大、缩放和平移能力。
+
+本阶段只改变前端显示和诊断流程，不改变：
+
+```text
+dataset camera schema
+camera key
+video recording
+image resolution
+action/state schema
+training export semantics
+```
+
+### 18.2 当前问题
+
+当前相机区域依赖“主窗口高度 / 腕部行高”滑块调节。用户必须把主窗口高度和腕部行高都调到较高，才能看到完整画面；但此时页面总高度超过浏览器可视高度，无法一屏看到三路相机。
+
+### 18.3 布局要求
+
+1. 默认提供 Fit All 模式：
+   - 三路相机完整显示；
+   - 左侧 camera workspace 高度不超过当前浏览器可视高度；
+   - 默认不需要整页滚动即可看到三路画面；
+   - 视频不得拉伸；
+   - 默认 `object-fit: contain`；
+   - camera tile 保持相机原始宽高比。当前相机如果是 4:3，就按 4:3；实现不得写死 4:3。
+
+2. 提供 Collect 模式：
+   - 主视角相对更大；
+   - 左右腕部画面仍完整可见；
+   - 适合作为正式采集默认布局。
+
+3. 提供 Inspect 模式：
+   - 允许单路相机放大；
+   - 支持滚轮缩放；
+   - 支持拖拽平移；
+   - 支持 reset view；
+   - 可允许页面滚动；
+   - 用于检查细节，不作为默认采集布局。
+
+4. 右侧控制栏独立滚动：
+   - 任务描述、ready/sync、采集控制、dataset、export、log 在右侧 sidebar 内滚动；
+   - 不影响左侧相机区完整显示。
+
+### 18.4 缩放语义
+
+必须区分两类缩放：
+
+1. `layout scale`：
+   - 改变 camera tile 在页面中的显示尺寸；
+   - 用于 Fit All / Collect；
+   - 不改变视频内容本身；
+   - 不改变采集数据。
+
+2. `image zoom`：
+   - 在单个 tile 内放大视频内容；
+   - 用于 Inspect / Focus；
+   - 支持 pan；
+   - 不改变采集数据。
+
+禁止使用会导致布局占位和视觉区域不一致的粗暴整体 `transform: scale(...)`。Fit All / Collect 调整 tile 布局尺寸；Inspect / Focus 才允许视频内容 zoom + pan。
+
+### 18.5 控件命名
+
+旧控件：
+
+```text
+主窗口高度
+腕部行高
+左右腕宽度
+```
+
+改为：
+
+```text
+布局预设：Fit All / Collect / Inspect
+整体缩放
+主视角占比
+腕部区域占比
+左右腕比例
+```
+
+### 18.6 验收标准
+
+1. 默认进入页面时，三路相机完整可见；
+2. Fit All 下无需整页滚动即可看到 `main / wrist_left / wrist_right`；
+3. Collect 下主视角更大，腕部画面仍完整；
+4. Inspect 下单路相机可 zoom / pan / reset；
+5. 视频不拉伸、不裁切；
+6. 右侧控制栏独立滚动；
+7. 相机 fps / latency 仍显示；
+8. 不改变 dataset camera schema；
+9. 不改变实际采集视频分辨率；
+10. 不影响 Start / Stop / Ready / Sync / Teleop 操作。
+
+### 18.7 Camera Quality Diagnostics
+
+右腕相机模糊按以下顺序排查：
+
+1. 物理检查：
+   - 擦镜头；
+   - 检查保护膜；
+   - 检查镜头是否松动；
+   - 检查相机与目标距离；
+   - 如果是手动对焦镜头，调整焦距环。
+
+2. 对比检查：
+   - 左右腕相机交换 USB 口；
+   - 左右腕相机交换物理位置；
+   - 判断模糊是否跟随相机，还是跟随安装位置。
+
+3. 软件检查：
+   - 使用 `v4l2-ctl` 查看 focus / exposure 参数；
+   - 如果支持 `focus_auto`，测试关闭自动对焦；
+   - 如果支持 `focus_absolute`，测试固定焦距；
+   - 检查曝光过高、增益过高、帧率异常。
+
+4. 不默认启用软件锐化：
+   - UI 展示锐化不能替代真实相机清晰度；
+   - 不应改变训练数据；
+   - 如果后续加入锐化，只能作为 UI debug overlay，默认关闭。
+
+现场命令：
+
+```bash
+ls -l /dev/video*
+ls -l /dev/v4l/by-path
+
+# 假设右腕是 /dev/video6
+v4l2-ctl -d /dev/video6 --list-ctrls
+v4l2-ctl -d /dev/video6 --all
+
+# 如果设备支持 focus，现场逐值试，不允许拍脑袋固定。
+v4l2-ctl -d /dev/video6 -c focus_auto=0
+v4l2-ctl -d /dev/video6 -c focus_absolute=20
+```
+
+每次改 `focus_absolute` 后必须看 UI 清晰度变化。该流程只用于诊断，不改变 dataset schema / video recording / training export。
