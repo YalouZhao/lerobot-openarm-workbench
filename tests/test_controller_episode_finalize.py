@@ -139,12 +139,20 @@ def make_safety_settings(*, verified: bool = True):
 class FakeDataset:
     def __init__(self) -> None:
         self.saved = False
+        self.closed = False
+        self.meta_closed = False
+        self.episodes_since_last_encoding = 0
+        self.meta = type("FakeDatasetMeta", (), {"_close_writer": lambda meta_self: setattr(self, "meta_closed", True)})()
 
     def has_pending_frames(self) -> bool:
         return True
 
     def save_episode(self) -> None:
         self.saved = True
+        self.episodes_since_last_encoding += 1
+
+    def _close_writer(self) -> None:
+        self.closed = True
 
 
 def test_stop_episode_finalizes_dataset_after_saving(tmp_path: Path) -> None:
@@ -189,6 +197,89 @@ def test_stop_episode_finalizes_dataset_after_saving(tmp_path: Path) -> None:
     assert fake_dataset.saved is True
     assert finalized == [True]
     assert controller.dataset is None
+
+
+def test_stop_episode_can_defer_dataset_finalize_after_saving(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1000,
+            finalize_after_each_episode=False,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="deferred-save-test")
+    fake_dataset = FakeDataset()
+    finalized = []
+
+    controller.dataset = fake_dataset
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-09T00:00:00+08:00"
+    controller.current_frame_count = 3
+    controller.current_record_start = 1.0
+    controller._finalize_dataset = lambda: finalized.append(True) or setattr(controller, "dataset", None)
+
+    result = controller.stop_episode()
+
+    assert result["ok"] is True
+    assert fake_dataset.saved is True
+    assert finalized == []
+    assert controller.dataset is fake_dataset
+    assert fake_dataset.closed is True
+    assert fake_dataset.meta_closed is True
+
+
+def test_status_reports_deferred_video_encoding_state(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1000,
+            finalize_after_each_episode=False,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="deferred-status-test")
+    fake_dataset = FakeDataset()
+    fake_dataset.episodes_since_last_encoding = 2
+    controller.dataset = fake_dataset
+
+    status = controller.get_status()
+
+    assert status["dataset"]["finalize_after_each_episode"] is False
+    assert status["dataset"]["video_encoding_batch_size"] == 1000
+    assert status["dataset"]["video_encoding_pending_episodes"] == 2
 
 
 def test_stop_and_label_episode_update_dataset_root_and_session_manifest(tmp_path: Path) -> None:
@@ -1017,6 +1108,64 @@ def test_stop_episode_dq_fails_short_and_slow_episode(tmp_path: Path) -> None:
     assert record["accepted"] is False
 
 
+
+def test_stop_episode_fps_excludes_save_duration_from_dq_gate(tmp_path: Path, monkeypatch) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={
+            "id": "teleop",
+            "mode": "relative_joint_offset",
+            "apply_openarm_mini_compat_mapping": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": True,
+        },
+        cameras={},
+        control={"min_episode_frames": 10, "min_control_fps_ratio": 0.8},
+        safety=make_safety_settings(),
+    )
+    controller = WorkbenchController(settings, session_id="dq-fps-save-duration-test")
+
+    class SlowSaveDataset(FakeDataset):
+        def save_episode(self):
+            fake_clock["now"] += 3.0
+            super().save_episode()
+
+    fake_clock = {"now": 100.0}
+    monkeypatch.setattr(controller_module.time, "perf_counter", lambda: fake_clock["now"])
+    controller.dataset = SlowSaveDataset()
+    controller.recording = True
+    controller.current_episode_index = 0
+    controller.current_task = "test task"
+    controller.current_started_at = "2026-06-26T09:00:00+08:00"
+    controller.current_frame_count = 60
+    controller.current_record_start = fake_clock["now"] - 2.0
+    controller.ready_state = "verified"
+    controller.sync_state = "valid"
+    controller._finalize_dataset = lambda: setattr(controller, "dataset", None)
+
+    controller.stop_episode()
+    labeled = controller.label_episode("success")
+
+    record = labeled["record"]
+    assert record["fps"] == 30.0
+    assert "control_fps_too_low" not in record["dq_reasons"]
+
 def test_control_step_dq_tracks_action_spike_and_nonfinite_action(
     tmp_path: Path,
     monkeypatch,
@@ -1423,11 +1572,11 @@ def test_empty_dataset_root_is_removed_before_lerobot_create(tmp_path: Path, mon
         },
     )()
 
-    class FakeDatasetFactory:
-        @staticmethod
-        def create(*args, **kwargs):
-            assert not Path(kwargs["root"]).exists()
-            return object()
+    def fake_create_lerobot_dataset(*args, **kwargs):
+        assert args == ("local/test",)
+        assert kwargs["fps"] == 30
+        assert not Path(kwargs["root"]).exists()
+        return object()
 
     class FakeVideoManager:
         def __init__(self, dataset):
@@ -1436,7 +1585,7 @@ def test_empty_dataset_root_is_removed_before_lerobot_create(tmp_path: Path, mon
         def __enter__(self):
             return self
 
-    monkeypatch.setattr(controller_module, "LeRobotDataset", FakeDatasetFactory)
+    monkeypatch.setattr(controller_module, "create_lerobot_dataset", fake_create_lerobot_dataset)
     monkeypatch.setattr(controller_module, "VideoEncodingManager", FakeVideoManager)
 
     controller._ensure_dataset()
@@ -1654,6 +1803,63 @@ def test_move_to_ready_marks_ready_verified_and_allows_recording_gate(tmp_path: 
     assert result["ok"] is True
     assert controller.ready_state == "verified"
     assert controller.latest_ready_result["ok"] is True
+
+
+def test_move_to_ready_holds_device_io_lock_while_reading_robot(tmp_path: Path) -> None:
+    ready_path = tmp_path / "ready_path.json"
+    ready_path.write_text(json.dumps({"mode": "current_pose", "waypoints": []}))
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop", "mode": "absolute_passthrough"},
+        cameras={},
+        control={"default_task": "test task"},
+        ready={"path": str(ready_path), "settle_time_s": 0.0, "require_ready_for_recording": True},
+    )
+    controller = WorkbenchController(settings, session_id="ready-lock-test")
+    controller.state = "idle"
+
+    class TrackingLock:
+        def __init__(self) -> None:
+            self.held = False
+
+        def __enter__(self):
+            self.held = True
+
+        def __exit__(self, exc_type, exc, tb):
+            self.held = False
+
+    tracking_lock = TrackingLock()
+    controller.device_io_lock = tracking_lock
+
+    class LockCheckingRobot:
+        action_features = {"left_joint_1.pos": float, "right_joint_1.pos": float}
+        is_connected = True
+
+        def get_observation(self):
+            assert tracking_lock.held is True
+            return {"left_joint_1.pos": 1.0, "right_joint_1.pos": -1.0}
+
+    controller.robot = LockCheckingRobot()
+
+    result = controller.move_to_ready(sleep=lambda _: None)
+
+    assert result["ok"] is True
 
 
 def test_start_episode_requires_sync_when_configured(tmp_path: Path) -> None:
@@ -2265,11 +2471,11 @@ def test_dataset_action_features_are_aggregated_with_robot_action_processor(
         key = "action" if pipeline is controller.robot_action_processor else "observation.state"
         return {key: {"dtype": "float32", "shape": (1,), "names": ["joint.pos"]}}
 
-    class FakeDatasetFactory:
-        @staticmethod
-        def create(*args, **kwargs):
-            created.update(kwargs)
-            return object()
+    def fake_create_lerobot_dataset(*args, **kwargs):
+        assert args == ("local/test",)
+        assert kwargs["fps"] == 30
+        created.update(kwargs)
+        return object()
 
     class FakeVideoManager:
         def __init__(self, dataset):
@@ -2289,10 +2495,289 @@ def test_dataset_action_features_are_aggregated_with_robot_action_processor(
         "combine_feature_dicts",
         lambda *feature_sets: {key: value for features in feature_sets for key, value in features.items()},
     )
-    monkeypatch.setattr(controller_module, "LeRobotDataset", FakeDatasetFactory)
+    monkeypatch.setattr(controller_module, "create_lerobot_dataset", fake_create_lerobot_dataset)
     monkeypatch.setattr(controller_module, "VideoEncodingManager", FakeVideoManager)
 
     controller._ensure_dataset()
 
     assert aggregate_calls == [controller.robot_action_processor, controller.robot_observation_processor]
     assert created["features"]["action"]["dtype"] == "float32"
+
+
+def test_training_export_finalizes_current_deferred_dataset_before_export(tmp_path: Path, monkeypatch) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1000,
+            finalize_after_each_episode=False,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="deferred-export-test")
+    controller.dataset = FakeDataset()
+    calls: list[str] = []
+
+    def finalize() -> None:
+        calls.append("finalize")
+        controller.dataset = None
+
+    def export(**kwargs):
+        calls.append("export")
+        assert kwargs["source_root"] == settings.dataset.root
+        return {"ok": True, "episodes_exported": 1}
+
+    monkeypatch.setattr(controller, "_finalize_dataset", finalize)
+    monkeypatch.setattr(controller_module, "export_training_package", export)
+
+    job_id = "job-1"
+    controller.training_export_job = {"ok": True, "status": "running", "job_id": job_id}
+    controller._run_training_export_job(
+        job_id,
+        {
+            "_finalize_current_dataset": controller._should_finalize_before_training_export(str(settings.dataset.root)),
+            "source_root": settings.dataset.root,
+            "source_repo_id": settings.dataset.repo_id,
+            "output_root": tmp_path / "export",
+            "output_repo_id": "local/export",
+            "config_file": None,
+        },
+    )
+
+    assert calls == ["finalize", "export"]
+    assert controller.dataset is None
+    assert controller.training_export_job["status"] == "succeeded"
+
+
+def test_training_export_does_not_finalize_unrelated_dataset_root(tmp_path: Path, monkeypatch) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1000,
+            finalize_after_each_episode=False,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="deferred-export-other-root-test")
+    controller.dataset = FakeDataset()
+    calls: list[str] = []
+
+    monkeypatch.setattr(controller, "_finalize_dataset", lambda: calls.append("finalize"))
+    monkeypatch.setattr(
+        controller_module,
+        "export_training_package",
+        lambda **kwargs: calls.append("export") or {"ok": True, "episodes_exported": 1},
+    )
+
+    job_id = "job-2"
+    controller.training_export_job = {"ok": True, "status": "running", "job_id": job_id}
+    other_root = tmp_path / "other-dataset"
+    controller._run_training_export_job(
+        job_id,
+        {
+            "_finalize_current_dataset": controller._should_finalize_before_training_export(str(other_root)),
+            "source_root": other_root,
+            "source_repo_id": "local/other",
+            "output_root": tmp_path / "export",
+            "output_repo_id": "local/export",
+            "config_file": None,
+        },
+    )
+
+    assert calls == ["export"]
+    assert controller.dataset is not None
+    assert controller.training_export_job["status"] == "succeeded"
+
+
+def test_finalize_dataset_refreshes_metadata_before_deferred_video_encoding(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1000,
+            finalize_after_each_episode=False,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="deferred-finalize-refresh-test")
+    calls: list[str] = []
+
+    class Meta:
+        episodes = ["stale"]
+
+        def _close_writer(self) -> None:
+            calls.append("meta_close_writer")
+
+        def load_metadata(self) -> None:
+            calls.append("load_metadata")
+            self.episodes = ["episode-0", "episode-1"]
+
+    class Dataset:
+        episodes_since_last_encoding = 1
+        meta = Meta()
+
+        def finalize(self) -> None:
+            calls.append("dataset_finalize")
+
+    class VideoManager:
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            calls.append(f"video_exit_episodes={len(controller.dataset.meta.episodes)}")
+
+    controller.dataset = Dataset()
+    controller.video_manager = VideoManager()
+
+    controller._finalize_dataset()
+
+    assert calls == [
+        "meta_close_writer",
+        "load_metadata",
+        "video_exit_episodes=2",
+        "dataset_finalize",
+    ]
+    assert controller.dataset is None
+    assert controller.video_manager is None
+
+
+def test_deferred_video_patch_uses_latest_episode_with_video_metadata(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1000,
+            finalize_after_each_episode=False,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="deferred-video-patch-test")
+    observed: list[list[dict] | None] = []
+
+    class Meta:
+        episodes = [
+            {"episode_index": 3, "videos/observation.images.main/chunk_index": 0},
+            {"episode_index": 4},
+        ]
+
+    class Dataset:
+        meta = Meta()
+
+        def _save_episode_video(self, video_key: str, episode_index: int) -> dict:
+            observed.append(self.meta.episodes)
+            return {"episode_index": episode_index}
+
+    dataset = Dataset()
+    controller.dataset = dataset
+
+    controller._patch_deferred_video_metadata_lookup()
+    result = dataset._save_episode_video("observation.images.main", 4)
+
+    assert result == {"episode_index": 4}
+    assert observed == [[{"episode_index": 3, "videos/observation.images.main/chunk_index": 0}]]
+    assert dataset.meta.episodes == [
+        {"episode_index": 3, "videos/observation.images.main/chunk_index": 0},
+        {"episode_index": 4},
+    ]
+
+
+def test_deferred_video_patch_initializes_first_pending_video_without_prior_metadata(tmp_path: Path) -> None:
+    settings = WorkbenchSettings(
+        workspace_root=tmp_path,
+        session_root=tmp_path / "sessions",
+        dataset=DatasetSettings(
+            repo_id="local/test",
+            root=tmp_path / "dataset",
+            fps=30,
+            episode_time_s=60,
+            streaming_encoding=True,
+            vcodec="h264",
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            num_image_writer_processes=0,
+            num_image_writer_threads_per_camera=4,
+            video_encoding_batch_size=1000,
+            finalize_after_each_episode=False,
+            push_to_hub=False,
+        ),
+        robot={"id": "robot", "left_arm": {}, "right_arm": {}},
+        teleop={"id": "teleop"},
+        cameras={},
+        control={},
+    )
+    controller = WorkbenchController(settings, session_id="deferred-video-patch-first-test")
+    observed: list[list[dict] | None] = []
+
+    class Meta:
+        episodes = [{"episode_index": 0}]
+
+    class Dataset:
+        meta = Meta()
+
+        def _save_episode_video(self, video_key: str, episode_index: int) -> dict:
+            observed.append(self.meta.episodes)
+            return {"episode_index": episode_index}
+
+    dataset = Dataset()
+    controller.dataset = dataset
+
+    controller._patch_deferred_video_metadata_lookup()
+    result = dataset._save_episode_video("observation.images.main", 0)
+
+    assert result == {"episode_index": 0}
+    assert observed == [None]
+    assert dataset.meta.episodes == [{"episode_index": 0}]

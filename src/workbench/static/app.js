@@ -121,24 +121,32 @@ const CameraStage = (() => {
       place: null,
     };
 
-    wrap.querySelector(".c-in").addEventListener("click", (e) => { e.stopPropagation(); zoomCenter(node, 1.4); });
-    wrap.querySelector(".c-out").addEventListener("click", (e) => { e.stopPropagation(); zoomCenter(node, 1 / 1.4); });
+    node.img.addEventListener("load", () => {
+      if (node.img.naturalWidth && node.img.naturalHeight) {
+        setCameraAspect(node, node.img.naturalWidth, node.img.naturalHeight);
+      }
+    });
+
+    wrap.querySelector(".c-in").addEventListener("click", (e) => { e.stopPropagation(); if (imageZoomEnabled()) zoomCenter(node, 1.4); });
+    wrap.querySelector(".c-out").addEventListener("click", (e) => { e.stopPropagation(); if (imageZoomEnabled()) zoomCenter(node, 1 / 1.4); });
     wrap.querySelector(".c-reset").addEventListener("click", (e) => { e.stopPropagation(); reset(node); });
     wrap.querySelector(".c-full").addEventListener("click", (e) => { e.stopPropagation(); toggleFullscreen(node.wrap); });
 
     node.view.addEventListener("wheel", (e) => {
+      if (!imageZoomEnabled()) return;
       e.preventDefault();
       zoomAt(node, e.clientX, e.clientY, e.deltaY < 0 ? 1.12 : 1 / 1.12);
     }, {passive: false});
 
     node.view.addEventListener("dblclick", (e) => {
+      if (!imageZoomEnabled()) return;
       if (node.vt.scale > 1.001) reset(node);
       else zoomAt(node, e.clientX, e.clientY, 2.2);
     });
 
     let drag = null;
     node.view.addEventListener("pointerdown", (e) => {
-      if (node.vt.scale <= 1.001) return;
+      if (!imageZoomEnabled() || node.vt.scale <= 1.001) return;
       drag = {x: e.clientX, y: e.clientY};
       node.view.classList.add("panning");
       node.view.setPointerCapture(e.pointerId);
@@ -156,6 +164,11 @@ const CameraStage = (() => {
     node.view.addEventListener("pointercancel", endDrag);
 
     return node;
+  }
+
+  function imageZoomEnabled() {
+    const stage = $("cameraGrid");
+    return Boolean(document.fullscreenElement) || stage?.dataset.layoutMode === "inspect";
   }
 
   function apply(node) {
@@ -189,6 +202,13 @@ const CameraStage = (() => {
   function toggleFullscreen(wrap) {
     if (document.fullscreenElement) document.exitFullscreen();
     else if (wrap.requestFullscreen) wrap.requestFullscreen();
+  }
+
+  function setCameraAspect(node, width, height) {
+    const w = Number(width || 0);
+    const h = Number(height || 0);
+    if (!node || !w || !h) return;
+    node.wrap.style.setProperty("--camera-aspect", `${w} / ${h}`);
   }
 
   function sync(cams) {
@@ -234,6 +254,7 @@ const CameraStage = (() => {
       const cam = cams[name] || {};
       const fps = cam.fps ? Number(cam.fps).toFixed(1) : "--";
       const age = cam.last_frame_age_ms;
+      setCameraAspect(node, cam.width || node.img.naturalWidth, cam.height || node.img.naturalHeight);
       let latCls = "", ageTxt = "--";
       if (age != null) { ageTxt = `${age} ms`; latCls = age > 120 ? "bad" : (age > 60 ? "warn" : ""); }
       node.latEl.className = `lat ${cam.ok ? latCls : "bad"}`;
@@ -242,22 +263,66 @@ const CameraStage = (() => {
     }
   }
 
-  return {update};
+  function resetAll() {
+    for (const node of nodes.values()) reset(node);
+  }
+
+  return {update, resetAll};
 })();
 
-function applyStageSizing(mainVh, thumbVh) {
-  const stage = $("cameraGrid");
-  if (!stage) return;
-  stage.style.setProperty("--main-h", `${mainVh}vh`);
-  stage.style.setProperty("--thumb-h", `${thumbVh}vh`);
+const cameraLayoutMode = {
+  current: "fit",
+  presets: {
+    fit: {scale: 88, mainShare: 58, wristShare: 28, split: 50},
+    collect: {scale: 94, mainShare: 64, wristShare: 28, split: 50},
+    inspect: {scale: 100, mainShare: 70, wristShare: 34, split: 50},
+  }
+};
+
+function clampNumber(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
 }
 
-function applyWristSplit(percent) {
+function applyCameraLayout() {
   const stage = $("cameraGrid");
-  if (!stage) return;
-  const left = Math.min(75, Math.max(25, Number(percent || 50)));
+  const scale = $("cameraLayoutScale");
+  const main = $("cameraMainShare");
+  const wrist = $("cameraWristShare");
+  const split = $("cameraWristSplit");
+  if (!stage || !scale || !main || !wrist || !split) return;
+
+  const scalePct = clampNumber(scale.value, Number(scale.min), Number(scale.max), 88);
+  const mainShare = clampNumber(main.value, Number(main.min), Number(main.max), 58);
+  const wristShare = clampNumber(wrist.value, Number(wrist.min), Number(wrist.max), 28);
+  const left = clampNumber(split.value, Number(split.min), Number(split.max), 50);
+
+  stage.dataset.layoutMode = cameraLayoutMode.current;
+  if (cameraLayoutMode.current !== "inspect") CameraStage.resetAll();
+  stage.style.setProperty("--camera-layout-scale", String(scalePct / 100));
+  stage.style.setProperty("--camera-main-share", String(mainShare));
+  stage.style.setProperty("--camera-wrist-share", String(wristShare));
   stage.style.setProperty("--wrist-left", `${left}%`);
   stage.style.setProperty("--wrist-right", `${100 - left}%`);
+
+  document.querySelectorAll("[data-layout-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.layoutMode === cameraLayoutMode.current);
+  });
+}
+
+function setCameraLayoutPreset(mode) {
+  const preset = cameraLayoutMode.presets[mode] || cameraLayoutMode.presets.fit;
+  cameraLayoutMode.current = mode in cameraLayoutMode.presets ? mode : "fit";
+  const scale = $("cameraLayoutScale");
+  const main = $("cameraMainShare");
+  const wrist = $("cameraWristShare");
+  const split = $("cameraWristSplit");
+  if (scale) scale.value = String(preset.scale);
+  if (main) main.value = String(preset.mainShare);
+  if (wrist) wrist.value = String(preset.wristShare);
+  if (split) split.value = String(preset.split);
+  applyCameraLayout();
 }
 
 function bindSplitter(splitter, axis, onDelta) {
@@ -286,35 +351,41 @@ function bindSplitter(splitter, axis, onDelta) {
 }
 
 function initCameraSizing() {
-  const main = $("cameraMainSize");
-  const thumb = $("cameraThumbSize");
+  const scale = $("cameraLayoutScale");
+  const main = $("cameraMainShare");
+  const wrist = $("cameraWristShare");
   const split = $("cameraWristSplit");
   const rowBar = $("cameraRowSplitter");
   const colBar = $("cameraColSplitter");
-  if (!main || !thumb || !split || !rowBar || !colBar) return;
+  if (!scale || !main || !wrist || !split || !rowBar || !colBar) return;
 
-  const update = () => {
-    applyStageSizing(Number(main.value || 60), Number(thumb.value || 26));
-    applyWristSplit(Number(split.value || 50));
-  };
-  main.addEventListener("input", update);
-  thumb.addEventListener("input", update);
-  split.addEventListener("input", update);
-  update();
+  document.querySelectorAll("[data-layout-mode]").forEach((button) => {
+    button.addEventListener("click", () => setCameraLayoutPreset(button.dataset.layoutMode));
+  });
+  [scale, main, wrist, split].forEach((input) => input.addEventListener("input", () => {
+    cameraLayoutMode.current = "custom";
+    applyCameraLayout();
+  }));
 
   bindSplitter(rowBar, "y", (deltaPx) => {
-    const delta = deltaPx / Math.max(1, window.innerHeight) * 100;
-    main.value = String(Math.min(Number(main.max), Math.max(Number(main.min), Number(main.value) + delta)));
-    thumb.value = String(Math.min(Number(thumb.max), Math.max(Number(thumb.min), Number(thumb.value) - delta * 0.45)));
-    update();
+    const board = $("cameraBoard");
+    const height = board ? board.getBoundingClientRect().height : window.innerHeight;
+    const delta = deltaPx / Math.max(1, height) * 100;
+    main.value = String(clampNumber(Number(main.value) + delta, Number(main.min), Number(main.max), 58));
+    wrist.value = String(clampNumber(Number(wrist.value) - delta * 0.5, Number(wrist.min), Number(wrist.max), 28));
+    cameraLayoutMode.current = "custom";
+    applyCameraLayout();
   });
   bindSplitter(colBar, "x", (deltaPx) => {
     const board = $("cameraBoard");
     const width = board ? board.getBoundingClientRect().width : window.innerWidth;
     const delta = deltaPx / Math.max(1, width) * 100;
-    split.value = String(Math.min(Number(split.max), Math.max(Number(split.min), Number(split.value) + delta)));
-    update();
+    split.value = String(clampNumber(Number(split.value) + delta, Number(split.min), Number(split.max), 50));
+    cameraLayoutMode.current = "custom";
+    applyCameraLayout();
   });
+
+  setCameraLayoutPreset("fit");
 }
 
 /* ============================================================

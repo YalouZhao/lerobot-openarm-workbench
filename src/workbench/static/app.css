@@ -172,34 +172,45 @@ main {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 420px;
   gap: 20px;
-  padding: 18px;
-  align-items: start;
+  padding: 16px 18px;
+  align-items: stretch;
+  height: calc(100dvh - 58px);
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* ============================================================
-   Camera stage — main on top, wrists below; each tile is an
-   independent pan/zoom viewport. Adaptive to viewport, whitespace OK.
+   Camera stage — layout-scale changes tile boxes; image zoom stays
+   inside each independent viewport. No whole-tile transform scaling.
    ============================================================ */
 .camera-stage {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
-  position: sticky;
-  top: 76px;
-  --main-h: 60vh;
-  --thumb-h: 26vh;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  --camera-layout-scale: .88;
+  --camera-main-share: 58;
+  --camera-wrist-share: 28;
   --wrist-left: 50%;
   --wrist-right: 50%;
+  --camera-board-width: min(1180px, 100%);
+}
+.camera-stage[data-layout-mode="inspect"] {
+  overflow: auto;
+  --camera-layout-scale: 1;
 }
 .camera-toolbar {
   width: 100%;
   max-width: 1180px;
   display: flex;
-  align-items: end;
+  align-items: start;
   justify-content: space-between;
   gap: 18px;
+  flex: none;
 }
 .camera-title {
   color: var(--ink);
@@ -211,19 +222,45 @@ main {
   color: var(--ink-3);
   font-size: 0.8125rem;
   margin-top: 3px;
+  max-width: 640px;
 }
 .camera-size-controls {
   display: grid;
-  grid-template-columns: auto 112px auto 112px auto 112px;
+  grid-template-columns: auto 104px auto 104px auto 104px auto 104px;
   align-items: center;
   gap: 8px 10px;
   padding: 7px 10px;
   border: 1px solid var(--separator);
   border-radius: var(--r-pill);
-  background: rgba(255,255,255,.72);
+  background: rgba(255,255,255,.76);
   box-shadow: var(--shadow-1);
   backdrop-filter: saturate(1.5) blur(18px);
   -webkit-backdrop-filter: saturate(1.5) blur(18px);
+}
+.camera-presets {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border-radius: var(--r-pill);
+  background: rgba(0,0,0,.045);
+}
+.camera-presets button {
+  min-height: 26px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.camera-presets button.active {
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 1px 4px rgba(0,0,0,.08);
 }
 .camera-size-controls label {
   margin: 0;
@@ -232,7 +269,7 @@ main {
   white-space: nowrap;
 }
 .camera-size-controls input[type="range"] {
-  width: 112px;
+  width: 104px;
   min-height: 0;
   padding: 0;
   border: none;
@@ -241,13 +278,22 @@ main {
   accent-color: var(--accent);
 }
 .camera-board {
-  width: 100%;
+  width: var(--camera-board-width);
   max-width: 1180px;
   display: grid;
-  grid-template-rows: minmax(260px, var(--main-h)) 14px minmax(140px, var(--thumb-h));
+  grid-template-rows:
+    minmax(0, calc((100% - 14px) * var(--camera-layout-scale) * var(--camera-main-share) / 100))
+    14px
+    minmax(0, calc((100% - 14px) * var(--camera-layout-scale) * var(--camera-wrist-share) / 100));
   gap: 0;
   margin: 0 auto;
   min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.camera-stage[data-layout-mode="inspect"] .camera-board {
+  min-height: 860px;
+  flex: 0 0 auto;
 }
 .camera-splitter {
   display: flex;
@@ -272,61 +318,51 @@ main {
   background: rgba(0,0,0,.16);
   transition: background var(--dur) var(--ease);
 }
-.camera-splitter.row::before {
-  width: 92px;
-  height: 5px;
-}
-.camera-splitter.col::before {
-  width: 5px;
-  height: 72px;
-}
+.camera-splitter.row::before { width: 86px; height: 5px; }
+.camera-splitter.col::before { width: 5px; height: 66px; }
 .camera-splitter:hover,
 .camera-splitter.dragging { opacity: 1; }
 .camera-splitter:hover::before,
 .camera-splitter.dragging::before { background: rgba(0,113,227,.55); }
 .camera-stage.resizing { user-select: none; }
 .camera-stage.resizing .cam-view { pointer-events: none; }
-.stage-main {
+.stage-main,
+.thumb-slot {
   position: relative;
-  width: 100%;
-  height: 100%;
+  min-width: 0;
   min-height: 0;
+  display: grid;
+  place-items: center;
   overflow: hidden;
-  border-radius: var(--r-lg);
 }
+.stage-main { width: 100%; height: 100%; border-radius: var(--r-lg); }
 .stage-thumbs {
   display: grid;
-  grid-template-columns: minmax(160px, var(--wrist-left)) 14px minmax(160px, var(--wrist-right));
+  grid-template-columns: minmax(120px, var(--wrist-left)) 14px minmax(120px, var(--wrist-right));
   gap: 0;
   width: 100%;
   height: 100%;
   min-height: 0;
 }
-.thumb-slot {
-  position: relative;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  border-radius: var(--r-md);
-}
+.thumb-slot { border-radius: var(--r-md); }
 .stage-thumbs:empty { display: none; }
 
 /* Camera tile */
 .cam {
   position: relative;
-  width: 100%;
+  width: auto;
   height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: var(--camera-aspect, auto);
   background: var(--video-bg);
   border-radius: var(--r-lg);
   overflow: hidden;
   box-shadow: var(--shadow-1);
   min-width: 0;
 }
-.cam.in-main { position: relative; }
-.cam.in-thumb {
-  position: relative;
-  border-radius: var(--r-md);
-}
+.cam.in-main { border-radius: var(--r-lg); }
+.cam.in-thumb { border-radius: var(--r-md); }
 .cam-view {
   position: absolute; inset: 0;
   overflow: hidden;
@@ -346,102 +382,21 @@ main {
 .cam.zoomed .cam-view { cursor: grab; }
 .cam.zoomed .cam-view.panning { cursor: grabbing; }
 
-/* HUD */
-.cam-hud {
-  position: absolute;
-  left: 12px; top: 12px;
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 5px 10px;
-  border-radius: var(--r-pill);
-  background: rgba(0, 0, 0, .42);
-  color: rgba(255,255,255,.92);
-  font-size: 0.75rem;             /* 12px */
-  font-weight: 500;
-  letter-spacing: -0.004em;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  pointer-events: none;
-}
-.cam.in-thumb .cam-hud { left: 9px; top: 9px; padding: 4px 9px; font-size: 0.6875rem; }
-.cam-hud .name { color: #fff; font-weight: 600; }
-.cam-hud .lat { color: rgba(255,255,255,.78); }
-.cam-hud .lat::before {
-  content: ""; display: inline-block;
-  width: 5px; height: 5px; border-radius: 50%;
-  margin-right: 5px; vertical-align: middle;
-  background: var(--green-dot);
-}
-.cam-hud .lat.warn::before { background: var(--orange-dot); }
-.cam-hud .lat.bad::before  { background: var(--red-dot); }
-
-/* Segmented zoom / fullscreen control (Apple-style translucent) */
-.cam-controls {
-  position: absolute;
-  right: 12px; top: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 1px;
-  padding: 3px;
-  border-radius: var(--r-pill);
-  background: rgba(0, 0, 0, .42);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  opacity: 0;
-  transform: translateY(-2px);
-  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
-}
-.cam:hover .cam-controls,
-.cam:focus-within .cam-controls,
-.cam.zoomed .cam-controls { opacity: 1; transform: none; }
-.cam-controls button {
-  width: 28px; height: 28px;
-  min-height: 0; padding: 0;
-  display: grid; place-items: center;
-  border: none; background: transparent;
-  color: rgba(255,255,255,.92);
-  border-radius: var(--r-pill);
-  cursor: pointer;
-  font-size: 15px; line-height: 1;
-  transition: background .12s var(--ease);
-}
-.cam-controls button:hover { background: rgba(255,255,255,.18); }
-.cam-controls button:active { background: rgba(255,255,255,.28); }
-.cam-controls .sep { width: 1px; height: 16px; background: rgba(255,255,255,.22); margin: 0 1px; }
-.cam.in-thumb .cam-controls { right: 9px; top: 9px; }
-
-/* Stream-down overlay */
-.cam-overlay {
-  position: absolute; inset: 0;
-  display: none;
-  place-items: center;
-  align-content: center;
-  gap: 10px;
-  background: rgba(0,0,0,.5);
-  color: rgba(255,255,255,.82);
-  font-size: 0.8125rem;
-  text-align: center;
-}
-.cam.down .cam-overlay { display: grid; }
-.cam.down { box-shadow: inset 0 0 0 2px rgba(255,159,10,.85), var(--shadow-1); }
-.cam-overlay .spin {
-  width: 22px; height: 22px;
-  border: 2px solid rgba(255,255,255,.25);
-  border-top-color: rgba(255,255,255,.85);
-  border-radius: 50%;
-  animation: spin .9s linear infinite;
-  justify-self: center;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* Fullscreen */
-.cam:fullscreen { background: #000; border-radius: 0; }
-.cam:fullscreen .cam-view { place-items: center; }
-.cam:fullscreen img { width: 100vw; height: 100vh; }
-
 /* ============================================================
    Sidebar — Apple grouped panels
    ============================================================ */
-.sidebar { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+  padding-right: 2px;
+  padding-bottom: 20px;
+  scroll-padding-bottom: 20px;
+}
 .card {
   background: linear-gradient(180deg, var(--surface-strong), var(--surface));
   border-radius: var(--r-lg);
@@ -597,9 +552,11 @@ button.primary.loading::after { color: #fff; }
   box-shadow: var(--shadow-1);
   border: 1px solid var(--separator);
   overflow: hidden;
+  flex: 0 0 auto;
 }
 .acc-head {
   display: flex; align-items: center; gap: 11px;
+  min-height: 52px;
   padding: 15px 18px;
   cursor: pointer;
   user-select: none;
@@ -670,14 +627,15 @@ button.primary.loading::after { color: #fff; }
    ============================================================ */
 @media (max-width: 1180px) {
   main { grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; }
-  .camera-stage { position: static; }
+  main { height: auto; overflow: visible; }
+  .camera-stage { overflow: visible; }
 }
 @media (max-width: 980px) {
   main { grid-template-columns: 1fr; }
-  .camera-stage { --main-h: 48vh; --thumb-h: 22vh; }
   .stage-main { max-height: none; }
   .camera-toolbar { align-items: stretch; flex-direction: column; }
   .camera-size-controls { width: 100%; grid-template-columns: auto 1fr; border-radius: var(--r-md); }
+  .camera-presets { grid-column: 1 / -1; }
   .camera-size-controls input[type="range"] { width: 100%; }
 }
 

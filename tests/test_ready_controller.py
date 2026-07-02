@@ -121,6 +121,30 @@ def test_ready_controller_supports_lerobot_get_observation_api(tmp_path: Path) -
     assert result.final_target["left_joint_1.pos"] == 20.0
 
 
+def test_ready_controller_current_pose_mode_verifies_without_sending_motion(tmp_path: Path) -> None:
+    path = tmp_path / "ready_path.json"
+    path.write_text(json.dumps({"mode": "current_pose", "waypoints": []}))
+    robot = FakeRobot()
+    robot.qpos = {"left_joint_1.pos": 3.0, "right_joint_1.pos": -4.0}
+    controller = ReadyController(
+        ReadySettings(
+            path=path,
+            fps=4,
+            tolerance=0.01,
+            settle_time_s=0.0,
+            verify_after_move=True,
+        )
+    )
+
+    result = controller.move_to_ready(robot, sleep=lambda _: None)
+
+    assert result.ok is True
+    assert result.final_target == {"left_joint_1.pos": 3.0, "right_joint_1.pos": -4.0}
+    assert result.actual_qpos == result.final_target
+    assert result.max_abs_error == 0.0
+    assert robot.sent == []
+
+
 def test_ready_controller_rejects_missing_required_action_keys(tmp_path: Path) -> None:
     path = tmp_path / "ready_path.json"
     path.write_text(

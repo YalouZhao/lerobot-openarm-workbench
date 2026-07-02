@@ -24,16 +24,48 @@ except ImportError:
     from lerobot.datasets.utils import build_dataset_frame, combine_feature_dicts
 
 
+__all__ = [
+    "LeRobotDataset",
+    "VideoEncodingManager",
+    "adapt_bi_openarm_camera_keys",
+    "aggregate_pipeline_dataset_features",
+    "build_dataset_frame",
+    "combine_feature_dicts",
+    "create_initial_features",
+    "create_lerobot_dataset",
+    "dataset_has_pending_frames",
+    "make_bi_openarm_configuration",
+    "resume_lerobot_dataset",
+]
+
+
+def _filter_kwargs(callable_obj: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    parameters = inspect.signature(callable_obj).parameters
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return dict(kwargs)
+    return {key: value for key, value in kwargs.items() if key in parameters}
+
+
 def resume_lerobot_dataset(repo_id: str, **kwargs: Any):
     resume = getattr(LeRobotDataset, "resume", None)
     if resume is not None:
-        return resume(repo_id, **kwargs)
+        return resume(repo_id, **_filter_kwargs(resume, kwargs))
     image_writer_processes = int(kwargs.pop("image_writer_processes", 0))
     image_writer_threads = int(kwargs.pop("image_writer_threads", 0))
-    dataset = LeRobotDataset(repo_id, **kwargs)
+    dataset = LeRobotDataset(repo_id, **_filter_kwargs(LeRobotDataset, kwargs))
     if image_writer_processes or image_writer_threads:
         dataset.start_image_writer(image_writer_processes, image_writer_threads)
     return dataset
+
+
+def create_lerobot_dataset(repo_id: str, **kwargs: Any):
+    try:
+        from lerobot.datasets.lerobot_dataset import LeRobotDataset as DatasetClass
+    except ImportError:
+        DatasetClass = LeRobotDataset
+
+    create = DatasetClass.create
+    return create(repo_id, **_filter_kwargs(create, kwargs))
 
 
 def dataset_has_pending_frames(dataset: Any) -> bool:

@@ -103,6 +103,42 @@ Task profile 示例：
 /tmp/lerobot-phase1-hardware-v2-verified/<name>_training_export
 ```
 
+## XLeRobot / SO101 v3
+
+XLeRobot / SO101 双臂适配运行在新电脑 `so101-log`，不影响 OpenArm 8091。
+
+```text
+路径：/home/log/lerobot_workbench
+端口：8093
+URL：http://10.100.56.143:8093
+配置：config/workbench_config.xlerobot_so101.json
+数据：/home/log/data/xlerobot_so101_v1/dataset
+保存策略：Stop 后延迟视频编码；导出/切换/关闭时完成 pending encoding
+```
+
+启动：
+
+```bash
+ssh so101-log
+cd /home/log/lerobot_workbench
+./run_xlerobot_workbench_8093.sh
+```
+
+详细 SOP / 使用手册：
+
+```text
+docs/SOP_XLEROBOT_SO101.md
+docs/SO101_COLLECTION_WORKBENCH_MANUAL.md
+```
+
+当前 v3 verified 验收产物：
+
+```text
+collection dataset: /home/log/data/xlerobot_so101_v1/dataset
+training export:    /home/log/data/xlerobot_so101_v1/exports/xlerobot_so101_v1_verified_export_20260702
+QA report:          /home/log/data/xlerobot_so101_v1/reports/final_verified_20260702
+```
+
 ## 完整操作说明
 
 正式采集请看：

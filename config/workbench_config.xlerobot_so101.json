@@ -1,0 +1,369 @@
+{
+  "robot_profile_id": "xlerobot_so101_dual_v1",
+  "workspace_root": "/home/log/lerobot_workbench",
+  "session_root": "/home/log/data/xlerobot_so101_v1/sessions",
+  "exports_root": "/home/log/data/xlerobot_so101_v1/exports",
+  "dataset": {
+    "repo_id": "local/xlerobot_so101_v1",
+    "root": "/home/log/data/xlerobot_so101_v1/dataset",
+    "fps": 30,
+    "episode_time_s": 60,
+    "streaming_encoding": true,
+    "vcodec": "h264",
+    "encoder_threads": 2,
+    "encoder_queue_maxsize": 30,
+    "num_image_writer_processes": 0,
+    "num_image_writer_threads_per_camera": 4,
+    "video_encoding_batch_size": 1000,
+    "push_to_hub": false,
+    "dataset_schema_version": "xlerobot_so101_workbench_v1",
+    "action_schema_version": "xlerobot_so101_action_v1",
+    "state_schema_version": "xlerobot_so101_state_v1",
+    "camera_schema_version": "xlerobot_so101_3rgb_v1",
+    "action_semantics": "follower_effective_command",
+    "action_dim": 12,
+    "action_units": "normalized_lerobot_motor_units",
+    "command_frame_version": 1,
+    "finalize_after_each_episode": false
+  },
+  "robot": {
+    "type": "bi_so_follower",
+    "id": "xlerobot_follower",
+    "profile_id": "xlerobot_so101_dual_v1",
+    "use_degrees": false,
+    "disable_torque_on_disconnect": true,
+    "max_relative_target": null,
+    "left_arm": {
+      "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B14114117-if00",
+      "id": "xlerobot_follower_left"
+    },
+    "right_arm": {
+      "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B14115673-if00",
+      "id": "xlerobot_follower_right"
+    }
+  },
+  "teleop": {
+    "type": "bi_so_leader",
+    "id": "so101_leader",
+    "profile_id": "xlerobot_so101_dual_v1",
+    "mode": "relative_joint_offset",
+    "apply_openarm_mini_compat_mapping": false,
+    "compat_mapping_version": "so101_leader_to_xlerobot_follower_v1",
+    "compat_mapping_verified": true,
+    "use_degrees": false,
+    "left_arm": {
+      "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5AB9066002-if00",
+      "id": "so101_leader_left"
+    },
+    "right_arm": {
+      "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5AAF218340-if00",
+      "id": "so101_leader_right"
+    }
+  },
+  "cameras": {
+    "main": {
+      "type": "opencv",
+      "index_or_path": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:3.2:1.0-video-index0",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "fourcc": "MJPG",
+      "warmup_s": 2
+    },
+    "wrist_left": {
+      "type": "opencv",
+      "index_or_path": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:2:1.0-video-index0",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "fourcc": "MJPG",
+      "warmup_s": 2
+    },
+    "wrist_right": {
+      "type": "opencv",
+      "index_or_path": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:3.1:1.0-video-index0",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "fourcc": "MJPG",
+      "warmup_s": 2
+    }
+  },
+  "control": {
+    "robot_profile_id": "xlerobot_so101_dual_v1",
+    "teleop_when_idle": false,
+    "default_task": "SO101 v3 verified collection smoke test.",
+    "jpeg_quality": 80,
+    "camera_timeout_s": 2.0,
+    "connect_retries": 2,
+    "connect_retry_delay_s": 1.5,
+    "auto_reconnect_when_idle": true,
+    "reconnect_cooldown_s": 5.0,
+    "min_episode_frames": 10,
+    "min_control_fps_ratio": 0.5,
+    "action_spike_threshold": 30.0
+  },
+  "safety": {
+    "safety_config_version": "xlerobot_so101_safety_v1",
+    "safety_config_verified": true,
+    "driver_mismatch_atol": 0.0001,
+    "mismatch_contamination_frames": 3,
+    "tracking_error_persistence_frames": 3,
+    "action_keys": [
+      "left_shoulder_pan.pos",
+      "left_shoulder_lift.pos",
+      "left_elbow_flex.pos",
+      "left_wrist_flex.pos",
+      "left_wrist_roll.pos",
+      "left_gripper.pos",
+      "right_shoulder_pan.pos",
+      "right_shoulder_lift.pos",
+      "right_elbow_flex.pos",
+      "right_wrist_flex.pos",
+      "right_wrist_roll.pos",
+      "right_gripper.pos"
+    ],
+    "joints": {
+      "left_shoulder_pan.pos": {
+        "hard_limit": [
+          -100.0,
+          100.0
+        ],
+        "soft_limit": [
+          -100.0,
+          100.0
+        ],
+        "deadband": 0.0,
+        "max_step": 15.0,
+        "max_velocity": 450.0,
+        "tracking_error_warning": 20.0,
+        "tracking_error_contamination": 40.0,
+        "tracking_error_freeze": 80.0
+      },
+      "left_shoulder_lift.pos": {
+        "hard_limit": [
+          -100.0,
+          100.0
+        ],
+        "soft_limit": [
+          -100.0,
+          100.0
+        ],
+        "deadband": 0.0,
+        "max_step": 15.0,
+        "max_velocity": 450.0,
+        "tracking_error_warning": 20.0,
+        "tracking_error_contamination": 40.0,
+        "tracking_error_freeze": 80.0
+      },
+      "left_elbow_flex.pos": {
+        "hard_limit": [
+          -100.0,
+          100.0
+        ],
+        "soft_limit": [
+          -100.0,
+          100.0
+        ],
+        "deadband": 0.0,
+        "max_step": 15.0,
+        "max_velocity": 450.0,
+        "tracking_error_warning": 20.0,
+        "tracking_error_contamination": 40.0,
+        "tracking_error_freeze": 80.0
+      },
+      "left_wrist_flex.pos": {
+        "hard_limit": [
+          -100.0,
+          100.0
+        ],
+        "soft_limit": [
+          -100.0,
+          100.0
+        ],
+        "deadband": 0.0,
+        "max_step": 15.0,
+        "max_velocity": 450.0,
+        "tracking_error_warning": 20.0,
+        "tracking_error_contamination": 40.0,
+        "tracking_error_freeze": 80.0
+      },
+      "left_wrist_roll.pos": {
+        "hard_limit": [
+          -100.0,
+          100.0
+        ],
+        "soft_limit": [
+          -100.0,
+          100.0
+        ],
+        "deadband": 0.0,
+        "max_step": 15.0,
+        "max_velocity": 450.0,
+        "tracking_error_warning": 20.0,
+        "tracking_error_contamination": 40.0,
+        "tracking_error_freeze": 80.0
+      },
+      "left_gripper.pos": {
+        "hard_limit": [
+          0.0,
+          100.0
+        ],
+        "soft_limit": [
+          0.0,
+          100.0
+        ],
+        "deadband": 0.0,
+        "max_step": 35.0,
+        "max_velocity": 1050.0,
+        "tracking_error_warning": 30.0,
+        "tracking_error_contamination": 60.0,
+        "tracking_error_freeze": 100.0
+      },
+      "right_shoulder_pan.pos": {
+        "hard_limit": [
+          -100.0,
+          100.0
+        ],
+        "soft_limit": [
+          -100.0,
+          100.0
+        ],
+        "deadband": 0.0,
+        "max_step": 15.0,
+        "max_velocity": 450.0,
+        "tracking_error_warning": 20.0,
+        "tracking_error_contamination": 40.0,
+        "tracking_error_freeze": 80.0
+      },
+      "right_shoulder_lift.pos": {
+        "hard_limit": [
+          -100.0,
+          100.0
+        ],
+        "soft_limit": [
+          -100.0,
+          100.0
+        ],
+        "deadband": 0.0,
+        "max_step": 15.0,
+        "max_velocity": 450.0,
+        "tracking_error_warning": 20.0,
+        "tracking_error_contamination": 40.0,
+        "tracking_error_freeze": 80.0
+      },
+      "right_elbow_flex.pos": {
+        "hard_limit": [
+          -100.0,
+          100.0
+        ],
+        "soft_limit": [
+          -100.0,
+          100.0
+        ],
+        "deadband": 0.0,
+        "max_step": 15.0,
+        "max_velocity": 450.0,
+        "tracking_error_warning": 20.0,
+        "tracking_error_contamination": 40.0,
+        "tracking_error_freeze": 80.0
+      },
+      "right_wrist_flex.pos": {
+        "hard_limit": [
+          -100.0,
+          100.0
+        ],
+        "soft_limit": [
+          -100.0,
+          100.0
+        ],
+        "deadband": 0.0,
+        "max_step": 15.0,
+        "max_velocity": 450.0,
+        "tracking_error_warning": 20.0,
+        "tracking_error_contamination": 40.0,
+        "tracking_error_freeze": 80.0
+      },
+      "right_wrist_roll.pos": {
+        "hard_limit": [
+          -100.0,
+          100.0
+        ],
+        "soft_limit": [
+          -100.0,
+          100.0
+        ],
+        "deadband": 0.0,
+        "max_step": 15.0,
+        "max_velocity": 450.0,
+        "tracking_error_warning": 20.0,
+        "tracking_error_contamination": 40.0,
+        "tracking_error_freeze": 80.0
+      },
+      "right_gripper.pos": {
+        "hard_limit": [
+          0.0,
+          100.0
+        ],
+        "soft_limit": [
+          0.0,
+          100.0
+        ],
+        "deadband": 0.0,
+        "max_step": 35.0,
+        "max_velocity": 1050.0,
+        "tracking_error_warning": 30.0,
+        "tracking_error_contamination": 60.0,
+        "tracking_error_freeze": 100.0
+      }
+    },
+    "verified_by": "log + Codex hardware validation on so101-log",
+    "verified_at": "2026-07-02T10:10:00+08:00",
+    "verification_basis": "SO101 static feature/driver probe passed; Move to Ready verified max_error=0; Sync Master valid left+right with 12 keys; Dry Teleop enable/disable smoke passed; final verified hardware episode 0 accepted=true with dq_status=pass, driver_mismatch=0, tracking_warning=0, tracking_contamination=0, tracking_freeze=0, action_dim=12, action/state finite, fps=29.94; training export succeeded and LeRobotDataset loader validation passed."
+  },
+  "ready": {
+    "path": "/home/log/lerobot_workbench/config/ready_path_xlerobot_so101.json",
+    "fps": 30,
+    "tolerance": 2.0,
+    "settle_time_s": 0.2,
+    "verify_after_move": true,
+    "require_ready_for_recording": true
+  },
+  "sync": {
+    "samples": 3,
+    "require_sync_for_recording": true,
+    "sample_interval_s": 0.02,
+    "required_arms": [
+      "left",
+      "right"
+    ],
+    "gains": {
+      "left_shoulder_pan.pos": 1.0,
+      "left_shoulder_lift.pos": 1.0,
+      "left_elbow_flex.pos": 1.0,
+      "left_wrist_flex.pos": 1.0,
+      "left_wrist_roll.pos": 1.0,
+      "left_gripper.pos": 1.0,
+      "right_shoulder_pan.pos": 1.0,
+      "right_shoulder_lift.pos": 1.0,
+      "right_elbow_flex.pos": 1.0,
+      "right_wrist_flex.pos": 1.0,
+      "right_wrist_roll.pos": 1.0,
+      "right_gripper.pos": 1.0
+    },
+    "deadband": {
+      "left_shoulder_pan.pos": 0.0,
+      "left_shoulder_lift.pos": 0.0,
+      "left_elbow_flex.pos": 0.0,
+      "left_wrist_flex.pos": 0.0,
+      "left_wrist_roll.pos": 0.0,
+      "left_gripper.pos": 0.0,
+      "right_shoulder_pan.pos": 0.0,
+      "right_shoulder_lift.pos": 0.0,
+      "right_elbow_flex.pos": 0.0,
+      "right_wrist_flex.pos": 0.0,
+      "right_wrist_roll.pos": 0.0,
+      "right_gripper.pos": 0.0
+    }
+  }
+}

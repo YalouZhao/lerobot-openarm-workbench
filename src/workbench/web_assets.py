@@ -30,15 +30,22 @@ INDEX_HTML = """<!doctype html>
       <div class="camera-toolbar">
         <div>
           <div class="camera-title">相机监控</div>
-          <div class="camera-subtitle">每个窗口独立占位，允许留白；滑块调窗口尺寸，滚轮只缩放画面内容，拖拽平移。</div>
+          <div class="camera-subtitle">Fit All / Collect 调整布局尺寸；Inspect 内滚轮才缩放画面内容。视频保持原始比例，不拉伸、不裁切。</div>
         </div>
-        <div class="camera-size-controls" aria-label="相机窗口尺寸">
-          <label for="cameraMainSize">主窗口高度</label>
-          <input id="cameraMainSize" type="range" min="42" max="74" value="60">
-          <label for="cameraThumbSize">腕部行高</label>
-          <input id="cameraThumbSize" type="range" min="16" max="36" value="26">
-          <label for="cameraWristSplit">左右腕宽度</label>
-          <input id="cameraWristSplit" type="range" min="25" max="75" value="50">
+        <div class="camera-size-controls" aria-label="相机布局控制">
+          <div class="camera-presets" role="group" aria-label="布局预设">
+            <button type="button" id="cameraLayoutFitAll" data-layout-mode="fit">Fit All</button>
+            <button type="button" id="cameraLayoutCollect" data-layout-mode="collect">Collect</button>
+            <button type="button" id="cameraLayoutInspect" data-layout-mode="inspect">Inspect</button>
+          </div>
+          <label for="cameraLayoutScale">整体缩放</label>
+          <input id="cameraLayoutScale" type="range" min="72" max="104" value="88">
+          <label for="cameraMainShare">主视角占比</label>
+          <input id="cameraMainShare" type="range" min="48" max="74" value="58">
+          <label for="cameraWristShare">腕部区域占比</label>
+          <input id="cameraWristShare" type="range" min="20" max="42" value="28">
+          <label for="cameraWristSplit">左右腕比例</label>
+          <input id="cameraWristSplit" type="range" min="30" max="70" value="50">
         </div>
       </div>
       <div class="camera-board" id="cameraBoard">

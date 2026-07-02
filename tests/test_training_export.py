@@ -24,6 +24,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from workbench.dataset_manifest import CanonicalDatasetManifest
 from workbench.episode_manifest import EpisodeRecord
 from workbench.safety import EXPECTED_FOLLOWER_ACTION_KEYS
+from workbench.xlerobot_profile import XLEROBOT_SO101_ACTION_NAMES, xlerobot_so101_contract_metadata
 from workbench.training_export import (
     TrainingExportError,
     export_training_package,
@@ -151,6 +152,141 @@ def create_source_dataset(root: Path, *, labels: list[str] | None = None) -> Non
         manifest.update_label(index, label)
 
 
+
+def xlerobot_profile_metadata() -> dict:
+    metadata = xlerobot_so101_contract_metadata(
+        compat_mapping_version="so101_leader_to_xlerobot_follower_v1",
+        safety_config_version="xlerobot_so101_safety_v1",
+        ready_required_for_collection=True,
+        sync_required_for_collection=True,
+    )
+    for key in (
+        "contract_version",
+        "dataset_action_source",
+        "action_description_en",
+        "action_description_zh",
+        "dataset_schema_version",
+        "action_semantics",
+        "compat_mapping_version",
+        "safety_config_version",
+    ):
+        metadata.pop(key, None)
+    return metadata
+
+
+def xlerobot_safety_metadata() -> dict:
+    keys = list(XLEROBOT_SO101_ACTION_NAMES)
+    return {
+        "safety_config_version": "xlerobot_so101_safety_v1",
+        "safety_config_verified": True,
+        "verified_by": "hardware_operator",
+        "verified_at": "2026-07-02T09:31:25+08:00",
+        "verification_basis": "xlerobot short episode smoke validation",
+        "safety_action_keys": keys,
+        "hard_limits": {key: ([0.0, 100.0] if "gripper" in key else [-100.0, 100.0]) for key in keys},
+        "soft_limits": {key: ([0.0, 100.0] if "gripper" in key else [-100.0, 100.0]) for key in keys},
+        "deadband": {key: 0.0 for key in keys},
+        "max_step": {key: (35.0 if "gripper" in key else 15.0) for key in keys},
+        "velocity_limit": {key: (1050.0 if "gripper" in key else 450.0) for key in keys},
+        "tracking_error_warning": {key: 20.0 for key in keys},
+        "tracking_error_contamination": {key: 40.0 for key in keys},
+        "tracking_error_freeze": {key: 80.0 for key in keys},
+        "driver_mismatch_atol": 1e-4,
+        "mismatch_contamination_frames": 3,
+        "tracking_error_persistence_frames": 3,
+    }
+
+
+def make_xlerobot_record(index: int, *, label: str = "success", dq_status: str = "pass", contaminated: bool = False):
+    profile = xlerobot_profile_metadata()
+    safety = xlerobot_safety_metadata()
+    return EpisodeRecord(
+        episode_index=index,
+        task="xlerobot task",
+        accepted=label == "success" and dq_status == "pass" and not contaminated,
+        label="unlabeled",
+        notes="",
+        started_at="2026-07-02T09:31:19+08:00",
+        ended_at="2026-07-02T09:31:21+08:00",
+        frame_count=3,
+        fps=30.0,
+        save_duration_s=0.1,
+        cameras={"main": "ok", "wrist_left": "ok", "wrist_right": "ok"},
+        dataset_schema_version="xlerobot_so101_workbench_v1",
+        action_semantics="follower_effective_command",
+        teleop_mode="relative_joint_offset",
+        compat_mapping_applied=True,
+        compat_mapping_version="so101_leader_to_xlerobot_follower_v1",
+        compat_mapping_verified=True,
+        dq_status=dq_status,
+        dq_reasons=(() if dq_status == "pass" else ("action_spike",)),
+        contaminated=contaminated,
+        contamination_reasons=(() if not contaminated else ("follower_tracking_freeze",)),
+        ready_state="verified",
+        ready_result={"ok": True},
+        sync_valid_at_record_start=True,
+        sync_state_at_record_start="valid",
+        sync_result_at_record_start={"ok": True, "state": "valid"},
+        command_validation={
+            "mismatch_frames": 0,
+            "max_abs_error": 0.0,
+            "affected_joints": [],
+            "max_consecutive_mismatch_frames": 0,
+            "action_spike_frames": 0,
+            "nonfinite_action_frames": 0,
+        },
+        tracking_validation={"freeze_frames": 0},
+        **profile,
+        **safety,
+    )
+
+
+def create_xlerobot_source_dataset(root: Path) -> None:
+    features = {
+        "action": {"dtype": "float32", "shape": (12,), "names": list(XLEROBOT_SO101_ACTION_NAMES)},
+        "observation.state": {"dtype": "float32", "shape": (12,), "names": list(XLEROBOT_SO101_ACTION_NAMES)},
+    }
+    dataset = LeRobotDataset.create(
+        "local/xlerobot_source_collection",
+        fps=30,
+        features=features,
+        root=root,
+        use_videos=False,
+    )
+    for episode_index, label in enumerate(["success", "failure", "success"]):
+        for frame_index in range(3):
+            value = float(episode_index * 10 + frame_index)
+            dataset.add_frame(
+                {
+                    "action": np.full((12,), value, dtype=np.float32),
+                    "observation.state": np.full((12,), value + 0.5, dtype=np.float32),
+                    "task": "xlerobot task",
+                }
+            )
+        dataset.save_episode()
+    dataset.finalize()
+
+    manifest = CanonicalDatasetManifest(
+        root,
+        root.name,
+        "local/xlerobot_source_collection",
+        "xlerobot task",
+        "session-1",
+        dataset_schema_version="xlerobot_so101_workbench_v1",
+        action_semantics="follower_effective_command",
+        teleop_mode="relative_joint_offset",
+        compat_mapping_applied=True,
+        compat_mapping_version="so101_leader_to_xlerobot_follower_v1",
+        compat_mapping_verified=True,
+        safety_metadata=xlerobot_safety_metadata(),
+        profile_metadata=xlerobot_profile_metadata(),
+    )
+    manifest.ensure_initialized(new_dataset_created=True)
+    for index, label in enumerate(["success", "failure", "success"]):
+        dq_status = "fail" if label == "failure" else "pass"
+        manifest.append_episode(make_xlerobot_record(index, label=label, dq_status=dq_status))
+        manifest.update_label(index, label)
+
 def test_training_export_filters_clean_accepted_episodes_and_reindexes(tmp_path: Path) -> None:
     source = tmp_path / "source"
     output = tmp_path / "exported"
@@ -271,3 +407,47 @@ def test_training_export_script_writes_package(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     report = json.loads((output / "export_report.json").read_text())
     assert report["exported_episode_count"] == 1
+
+
+def test_xlerobot_training_export_writes_contract_and_loader_valid_dataset(tmp_path: Path) -> None:
+    source = tmp_path / "xlerobot_source"
+    output = tmp_path / "xlerobot_exported"
+    create_xlerobot_source_dataset(source)
+
+    result = export_training_package(
+        source_root=source,
+        source_repo_id="local/xlerobot_source_collection",
+        output_root=output,
+        output_repo_id="local/xlerobot_exported_training",
+        config_file=Path("config/workbench_config.xlerobot_so101.json"),
+    )
+
+    report = json.loads((output / "export_report.json").read_text())
+    contract = json.loads((output / "dataset_action_contract.json").read_text())
+    provenance = json.loads((output / "export_provenance.json").read_text())
+    exported = LeRobotDataset("local/xlerobot_exported_training", root=output)
+
+    assert result["exported_episode_count"] == 2
+    assert report["episode_mapping"] == [
+        {"source_episode_index": 0, "export_episode_index": 0},
+        {"source_episode_index": 2, "export_episode_index": 1},
+    ]
+    assert report["loader_validation"] == {"passed": True, "frame_count": 6, "episode_count": 2}
+    assert exported.num_episodes == 2
+    assert exported.num_frames == 6
+    assert exported[0]["episode_index"].item() == 0
+    assert exported[3]["episode_index"].item() == 1
+    assert exported.features["action"]["shape"] == (12,)
+    assert list(exported.features["action"]["names"]) == list(XLEROBOT_SO101_ACTION_NAMES)
+    assert contract["contract_version"] == "xlerobot_so101_dataset_action_contract_v1"
+    assert contract["dataset_schema_version"] == "xlerobot_so101_workbench_v1"
+    assert contract["action_semantics"] == "follower_effective_command"
+    assert contract["action_dim"] == 12
+    assert contract["action_units"] == "normalized_lerobot_motor_units"
+    assert contract["dataset_action_source"] == "workbench_effective_command"
+    assert "driver_returned_action" in contract["excluded_action_sources"]
+    assert "runtime" not in json.dumps(contract).lower()
+    assert report["robot_profile_id"] == "xlerobot_so101_dual_v1"
+    assert report["action_schema_version"] == "xlerobot_so101_action_v1"
+    assert provenance["config_file"] == "config/workbench_config.xlerobot_so101.json"
+    assert provenance["dataset_schema_version"] == "xlerobot_so101_workbench_v1"

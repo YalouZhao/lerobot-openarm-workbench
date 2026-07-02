@@ -100,6 +100,19 @@ def test_index_links_external_static_assets() -> None:
         # Core control + dataset + export DOM hooks are preserved verbatim.
         for marker in ("id=\"cameraGrid\"", "id=\"start\"", "id=\"switchDataset\"", "id=\"exportStart\""):
             assert marker in body
+        # Camera viewport UI uses semantic layout presets and layout-scale controls.
+        for marker in (
+            "id=\"cameraLayoutFitAll\"",
+            "id=\"cameraLayoutCollect\"",
+            "id=\"cameraLayoutInspect\"",
+            "id=\"cameraLayoutScale\"",
+            "id=\"cameraMainShare\"",
+            "id=\"cameraWristShare\"",
+            "id=\"cameraWristSplit\"",
+        ):
+            assert marker in body
+        for legacy_label in ("主窗口高度", "腕部行高", "左右腕宽度"):
+            assert legacy_label not in body
     finally:
         server.shutdown()
 
@@ -111,6 +124,16 @@ def test_static_css_route() -> None:
         assert status == 200
         assert "text/css" in ctype
         assert ":root" in body and "--accent" in body
+        assert "--camera-layout-scale" in body
+        assert "--camera-main-share" in body
+        assert "--camera-wrist-share" in body
+        assert "aspect-ratio: var(--camera-aspect" in body
+        assert "overflow-y: auto" in body
+        assert ".sidebar {" in body and "min-height: 0" in body
+        assert "padding-bottom: 20px" in body
+        assert "scroll-padding-bottom" in body
+        assert "--main-h" not in body
+        assert "--thumb-h" not in body
     finally:
         server.shutdown()
 
@@ -123,5 +146,10 @@ def test_static_js_route() -> None:
         assert "javascript" in ctype
         assert "function updateButtons" in body
         assert "/api/episode/start" in body
+        assert "function applyCameraLayout" in body
+        assert "cameraLayoutMode" in body
+        assert "setCameraAspect" in body
+        assert "naturalWidth" in body and "naturalHeight" in body
+        assert "applyStageSizing" not in body
     finally:
         server.shutdown()

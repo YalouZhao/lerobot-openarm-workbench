@@ -13,6 +13,13 @@ import numpy as np
 from .atomic_io import atomic_write_json
 from .config import COMMAND_FRAME_VERSION, RELATIVE_JOINT_MODE, V2_ACTION_SEMANTICS, V2_DATASET_SCHEMA
 from .dataset_manifest import SAFETY_SEMANTIC_FIELDS, SEMANTIC_FIELDS, read_jsonl
+from .xlerobot_profile import (
+    XLEROBOT_SO101_CONTRACT_VERSION,
+    XLEROBOT_SO101_DATASET_SCHEMA_VERSION,
+    XLEROBOT_SO101_PROFILE_METADATA_FIELDS,
+    expected_xlerobot_so101_profile_metadata,
+    validate_xlerobot_so101_manifest_metadata,
+)
 
 
 CONTRACT_VERSION = "openarm_dataset_action_contract_v1"
@@ -72,6 +79,7 @@ def plan_training_export(
         "action_semantics": manifest["action_semantics"],
         "safety_config_version": manifest["safety_config_version"],
         "compat_mapping_version": manifest["compat_mapping_version"],
+        **_profile_plan_fields(manifest),
     }
 
 
@@ -142,6 +150,7 @@ def export_training_package(
         "action_semantics": manifest["action_semantics"],
         "safety_config_version": manifest["safety_config_version"],
         "compat_mapping_version": manifest["compat_mapping_version"],
+        **_profile_plan_fields(manifest),
         "loader_validation": loader_validation,
     }
     atomic_write_json(output_root / "export_report.json", report)
@@ -166,19 +175,36 @@ def _load_source_manifest(source_root: Path) -> dict[str, Any]:
 
 def _validate_source_manifest(manifest: Mapping[str, Any]) -> None:
     required = set(SEMANTIC_FIELDS) | set(SAFETY_SEMANTIC_FIELDS) | {"compat_mapping_verified"}
+    if manifest.get("dataset_schema_version") == XLEROBOT_SO101_DATASET_SCHEMA_VERSION:
+        required |= set(XLEROBOT_SO101_PROFILE_METADATA_FIELDS)
     missing = sorted(field for field in required if field not in manifest)
     if missing:
         raise TrainingExportError(f"source dataset metadata incomplete: missing {missing}")
-    expected = {
-        "dataset_schema_version": V2_DATASET_SCHEMA,
-        "action_semantics": V2_ACTION_SEMANTICS,
-        "teleop_mode": RELATIVE_JOINT_MODE,
-        "command_frame_version": COMMAND_FRAME_VERSION,
-        "compat_mapping_applied": True,
-        "compat_mapping_version": "openarm_mini_818892a3",
-        "compat_mapping_verified": True,
-        "safety_config_verified": True,
-    }
+    if manifest.get("dataset_schema_version") == XLEROBOT_SO101_DATASET_SCHEMA_VERSION:
+        try:
+            validate_xlerobot_so101_manifest_metadata(manifest)
+        except ValueError as exc:
+            raise TrainingExportError(str(exc)) from exc
+        expected = {
+            "dataset_schema_version": XLEROBOT_SO101_DATASET_SCHEMA_VERSION,
+            "action_semantics": V2_ACTION_SEMANTICS,
+            "teleop_mode": RELATIVE_JOINT_MODE,
+            "command_frame_version": COMMAND_FRAME_VERSION,
+            "compat_mapping_applied": True,
+            "compat_mapping_verified": True,
+            "safety_config_verified": True,
+        }
+    else:
+        expected = {
+            "dataset_schema_version": V2_DATASET_SCHEMA,
+            "action_semantics": V2_ACTION_SEMANTICS,
+            "teleop_mode": RELATIVE_JOINT_MODE,
+            "command_frame_version": COMMAND_FRAME_VERSION,
+            "compat_mapping_applied": True,
+            "compat_mapping_version": "openarm_mini_818892a3",
+            "compat_mapping_verified": True,
+            "safety_config_verified": True,
+        }
     for key, value in expected.items():
         if manifest.get(key) != value:
             raise TrainingExportError(
@@ -200,6 +226,11 @@ def _episode_exclusion_reasons(record: Mapping[str, Any], manifest: Mapping[str,
         if record.get(field) != manifest.get(field):
             reasons.append("semantic_mismatch")
             break
+    if manifest.get("dataset_schema_version") == XLEROBOT_SO101_DATASET_SCHEMA_VERSION:
+        for field in XLEROBOT_SO101_PROFILE_METADATA_FIELDS:
+            if record.get(field) != manifest.get(field):
+                reasons.append("semantic_mismatch")
+                break
     if record.get("compat_mapping_verified") is not True:
         reasons.append("compat_mapping_unverified")
     if record.get("safety_config_verified") is not True:
@@ -259,8 +290,10 @@ def _create_output_dataset(
 ):
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
+    from .lerobot_compat import create_lerobot_dataset
+
     source_dataset = LeRobotDataset(source_repo_id, root=source_root)
-    output_dataset = LeRobotDataset.create(
+    output_dataset = create_lerobot_dataset(
         output_repo_id,
         fps=int(source_dataset.fps),
         features=source_dataset.features,
@@ -335,6 +368,27 @@ def _build_action_contract(manifest: Mapping[str, Any], features: Mapping[str, A
     if not action_names:
         shape = action_feature.get("shape") or ()
         action_names = [f"action_{i}" for i in range(int(shape[0]))]
+    if manifest.get("dataset_schema_version") == XLEROBOT_SO101_DATASET_SCHEMA_VERSION:
+        return {
+            "contract_version": XLEROBOT_SO101_CONTRACT_VERSION,
+            "dataset_schema_version": XLEROBOT_SO101_DATASET_SCHEMA_VERSION,
+            "action_semantics": V2_ACTION_SEMANTICS,
+            "collection_teleop_mode": manifest["teleop_mode"],
+            "safety_config_version": manifest["safety_config_version"],
+            "compat_mapping_version": manifest["compat_mapping_version"],
+            "dataset_action_source": "workbench_effective_command",
+            "excluded_action_sources": [
+                "master_raw_action",
+                "relative_target",
+                "target_before_safety",
+                "driver_returned_action",
+            ],
+            "notes": (
+                "The action column is the follower-space effective command in normalized "
+                "LeRobot motor units after relative_joint_offset and Workbench safety processing."
+            ),
+            **expected_xlerobot_so101_profile_metadata(),
+        }
     return {
         "contract_version": CONTRACT_VERSION,
         "dataset_schema_version": V2_DATASET_SCHEMA,
@@ -361,6 +415,14 @@ def _build_action_contract(manifest: Mapping[str, Any], features: Mapping[str, A
             "generated by the Workbench after compatibility mapping, relative teleop, and "
             "Workbench safety processing."
         ),
+    }
+
+
+def _profile_plan_fields(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        field: manifest[field]
+        for field in XLEROBOT_SO101_PROFILE_METADATA_FIELDS
+        if field in manifest
     }
 
 

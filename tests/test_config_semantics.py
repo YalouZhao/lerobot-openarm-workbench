@@ -119,10 +119,23 @@ def test_loads_xlerobot_so101_candidate_semantics(tmp_path: Path) -> None:
     ]
     payload["dataset"]["dataset_schema_version"] = "xlerobot_so101_workbench_v1"
     payload["dataset"]["root"] = "/tmp/xlerobot/dataset"
+    payload["robot_profile_id"] = "xlerobot_so101_dual_v1"
+    payload["dataset"]["action_schema_version"] = "xlerobot_so101_action_v1"
+    payload["dataset"]["state_schema_version"] = "xlerobot_so101_state_v1"
+    payload["dataset"]["camera_schema_version"] = "xlerobot_so101_3rgb_v1"
+    payload["dataset"]["action_dim"] = 12
+    payload["dataset"]["action_units"] = "normalized_lerobot_motor_units"
+    payload["robot"] = {"type": "bi_so_follower", "id": "xlerobot_follower"}
+    payload["cameras"] = {"main": {}, "wrist_left": {}, "wrist_right": {}}
     payload["teleop"]["mode"] = "relative_joint_offset"
+    payload["teleop"]["type"] = "bi_so_leader"
+    payload["teleop"]["id"] = "so101_leader"
     payload["teleop"]["apply_openarm_mini_compat_mapping"] = False
     payload["teleop"]["compat_mapping_version"] = "so101_leader_to_xlerobot_follower_v1_candidate"
     payload["teleop"]["compat_mapping_verified"] = False
+    payload["ready"]["require_ready_for_recording"] = True
+    payload["sync"]["require_sync_for_recording"] = True
+    payload["sync"]["required_arms"] = ["left", "right"]
     payload["safety"]["safety_config_version"] = "xlerobot_so101_safety_v1_candidate"
     payload["safety"]["safety_config_verified"] = False
     payload["safety"]["action_keys"] = so101_keys

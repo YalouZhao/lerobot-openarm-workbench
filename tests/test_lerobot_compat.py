@@ -104,6 +104,38 @@ def test_resume_lerobot_04_starts_image_writer_outside_constructor(monkeypatch, 
     assert dataset.writer_args == (2, 6)
 
 
+
+def test_resume_filters_kwargs_unsupported_by_constructor(monkeypatch, tmp_path: Path) -> None:
+    compat, _ = _load_compat(monkeypatch, legacy_exports=False)
+
+    class Dataset04Strict:
+        def __init__(self, repo_id, root=None, vcodec="libsvtav1"):
+            self.repo_id = repo_id
+            self.root = root
+            self.vcodec = vcodec
+            self.writer_args = None
+
+        def start_image_writer(self, num_processes=0, num_threads=4):
+            self.writer_args = (num_processes, num_threads)
+
+    compat.LeRobotDataset = Dataset04Strict
+
+    dataset = compat.resume_lerobot_dataset(
+        "local/test",
+        root=tmp_path,
+        vcodec="h264",
+        streaming_encoding=True,
+        encoder_queue_maxsize=30,
+        encoder_threads=2,
+        image_writer_processes=1,
+        image_writer_threads=3,
+    )
+
+    assert dataset.repo_id == "local/test"
+    assert dataset.root == tmp_path
+    assert dataset.vcodec == "h264"
+    assert dataset.writer_args == (1, 3)
+
 def test_resume_uses_classmethod_when_available(monkeypatch, tmp_path: Path) -> None:
     compat, _ = _load_compat(monkeypatch, legacy_exports=True)
 
