@@ -63,10 +63,16 @@ class ReadyController:
 
     def load_waypoints(self) -> list[dict[str, Any]]:
         payload = json.loads(self.settings.path.read_text(encoding="utf-8"))
+        if payload.get("mode") == "current_pose":
+            return []
         waypoints = payload.get("waypoints")
         if not isinstance(waypoints, list) or not waypoints:
             raise ValueError(f"{self.settings.path} must contain non-empty waypoints")
         return waypoints
+
+    def mode(self) -> str:
+        payload = json.loads(self.settings.path.read_text(encoding="utf-8"))
+        return str(payload.get("mode", "waypoints"))
 
     def move_to_ready(
         self,
@@ -76,24 +82,25 @@ class ReadyController:
     ) -> ReadyResult:
         started_at = _now_iso()
         current = self._current_action(robot)
-        final_target: dict[str, float] = {}
-        for waypoint in self.load_waypoints():
-            target = self._target_for_current_keys(current, waypoint)
-            final_target = target
-            duration_s = float(waypoint.get("duration_s", 0.0))
-            if duration_s <= 0:
-                raise ValueError("ready waypoint duration_s must be positive")
-            steps = max(1, int(round(duration_s * self.settings.fps)))
-            start = dict(current)
-            for index in range(1, steps + 1):
-                alpha = smoothstep(index / steps)
-                command = {
-                    key: start[key] + (target[key] - start[key]) * alpha
-                    for key in current
-                }
-                robot.send_action(command)
-                current = dict(command)
-                sleep(1.0 / self.settings.fps)
+        final_target: dict[str, float] = dict(current)
+        if self.mode() != "current_pose":
+            for waypoint in self.load_waypoints():
+                target = self._target_for_current_keys(current, waypoint)
+                final_target = target
+                duration_s = float(waypoint.get("duration_s", 0.0))
+                if duration_s <= 0:
+                    raise ValueError("ready waypoint duration_s must be positive")
+                steps = max(1, int(round(duration_s * self.settings.fps)))
+                start = dict(current)
+                for index in range(1, steps + 1):
+                    alpha = smoothstep(index / steps)
+                    command = {
+                        key: start[key] + (target[key] - start[key]) * alpha
+                        for key in current
+                    }
+                    robot.send_action(command)
+                    current = dict(command)
+                    sleep(1.0 / self.settings.fps)
         if self.settings.settle_time_s:
             sleep(self.settings.settle_time_s)
 

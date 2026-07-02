@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from .atomic_io import atomic_write_json, atomic_write_text
 from .dataset_manifest import read_jsonl
+from .xlerobot_profile import XLEROBOT_SO101_PROFILE_METADATA_FIELDS
 
 
 def build_collection_report(*, root: Path, repo_id: str | None = None) -> dict[str, Any]:
@@ -28,6 +29,11 @@ def build_collection_report(*, root: Path, repo_id: str | None = None) -> dict[s
             "action_semantics": manifest.get("action_semantics", ""),
             "safety_config_version": manifest.get("safety_config_version", ""),
             "compat_mapping_version": manifest.get("compat_mapping_version", ""),
+            **{
+                field: manifest.get(field)
+                for field in XLEROBOT_SO101_PROFILE_METADATA_FIELDS
+                if field in manifest
+            },
         },
         "summary": summary,
         "dq": dq,
