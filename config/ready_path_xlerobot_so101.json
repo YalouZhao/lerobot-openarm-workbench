@@ -1,5 +1,6 @@
 {
   "robot_profile_id": "xlerobot_so101_dual_v1",
+  "mode": "current_pose",
   "action_units": "normalized_lerobot_motor_units",
   "action_keys": [
     "left_shoulder_pan.pos",
@@ -16,5 +17,5 @@
     "right_gripper.pos"
   ],
   "waypoints": [],
-  "notes": "Placeholder only. Record a real ready path before collection."
+  "notes": "XLeRobot Phase D ready mode: treat the current follower pose as ready and verify without sending a trajectory."
 }
