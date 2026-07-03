@@ -21,6 +21,7 @@ def safety_metadata(*, verified: bool = True) -> dict:
         "verified_by": "hardware_operator",
         "verified_at": "2026-06-24T16:30:00+08:00",
         "verification_basis": "driver_mismatch=0; max_step_violations=0; no freeze/contamination",
+        "safety_action_keys": list(EXPECTED_FOLLOWER_ACTION_KEYS),
         "hard_limits": hard_limits,
         "soft_limits": hard_limits,
         "deadband": {key: 0.0 for key in EXPECTED_FOLLOWER_ACTION_KEYS},
@@ -181,6 +182,18 @@ def test_safety_verification_provenance_change_does_not_block_append(tmp_path: P
         compat_mapping_verified=False,
         safety_metadata=refreshed_safety,
     ).validate_for_collection()
+
+
+def test_missing_safety_action_keys_does_not_block_legacy_append(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    manifest = make_manifest(root)
+    manifest.ensure_initialized()
+    payload_path = root / "dataset_manifest.json"
+    payload = json.loads(payload_path.read_text())
+    payload.pop("safety_action_keys")
+    payload_path.write_text(json.dumps(payload))
+
+    manifest.validate_for_collection()
 
 
 def test_safety_limit_change_still_blocks_append(tmp_path: Path) -> None:

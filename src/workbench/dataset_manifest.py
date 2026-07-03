@@ -32,6 +32,9 @@ SAFETY_PROVENANCE_FIELDS = (
     "verified_at",
     "verification_basis",
 )
+SAFETY_OPTIONAL_METADATA_FIELDS = (
+    "safety_action_keys",
+)
 SAFETY_SEMANTIC_FIELDS = (
     "safety_config_version",
     "safety_config_verified",
@@ -432,7 +435,7 @@ class CanonicalDatasetManifest:
                 {
                     field: value
                     for field, value in self.safety_metadata.items()
-                    if field not in SAFETY_PROVENANCE_FIELDS
+                    if field not in SAFETY_PROVENANCE_FIELDS + SAFETY_OPTIONAL_METADATA_FIELDS
                 }
             )
         if self.profile_metadata is not None:
